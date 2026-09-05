@@ -211,6 +211,7 @@
     <ClInclude Include="aribcaption\src\decoder\b24_conv_tables.hpp" />
     <ClInclude Include="aribcaption\src\decoder\b24_drcs_conv.hpp" />
     <ClInclude Include="aribcaption\src\decoder\b24_gaiji_table.hpp" />
+    <ClInclude Include="aribcaption\src\decoder\b24_jisx0213_table.hpp" />
     <ClInclude Include="aribcaption\src\decoder\b24_macros.hpp" />
     <ClInclude Include="aribcaption\src\decoder\decoder_impl.hpp" />
     <ClInclude Include="aribcaption\src\renderer\alphablend.hpp" />
