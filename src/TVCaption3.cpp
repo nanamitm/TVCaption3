@@ -1167,10 +1167,14 @@ void CTVCaption2::ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue)
         }
         if (m_ttmlComponentTag[index] >= 0) {
             // TTMLで表示しているので、B24に変換された同じ字幕は表示しない。TTMLが届かなく
-            // なってB24の字幕に戻すときに表示し直せるよう、直近のものを取っておく
-            m_heldPes[index].push_back(std::move(pes));
-            if (m_heldPes[index].size() > TTML_MAX_HELD_PES) {
-                m_heldPes[index].erase(m_heldPes[index].begin());
+            // なってB24の字幕に戻すときに表示し直せるよう、直近のものを取っておく。
+            // 文字スーパーはPTSを持たず表示し直した時点を表示時刻にするので、古いもの
+            // (速報など)を今のもののように出さないよう取っておかない
+            if (index == STREAM_CAPTION) {
+                m_heldPes[index].push_back(std::move(pes));
+                if (m_heldPes[index].size() > TTML_MAX_HELD_PES) {
+                    m_heldPes[index].erase(m_heldPes[index].begin());
+                }
             }
             continue;
         }
