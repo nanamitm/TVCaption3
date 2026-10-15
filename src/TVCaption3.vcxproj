@@ -175,6 +175,13 @@
       <DelayLoadDLLs>freetype.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
   </ItemDefinitionGroup>
+  <!-- ビルドした版(git describe)をTVCaption3Version.hに書き出す(TVTestのTVTestVersionHashGen.batと同じ仕組み) -->
+  <ItemDefinitionGroup>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\tools\generate-version-header.ps1" -OutFile "$(ProjectDir)TVCaption3Version.h" -Name TVCAPTION3</Command>
+      <Message>Generating TVCaption3Version.h</Message>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="aribcaption\include\aribcaption\aligned_alloc.hpp" />
     <ClInclude Include="aribcaption\include\aribcaption\aribcaption.h" />

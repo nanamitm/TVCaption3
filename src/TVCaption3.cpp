@@ -4,6 +4,14 @@
 #include "TVCaption3.hpp"
 #include "aribcaption/src/base/wchar_helper.hpp"
 #include "resource.h"
+// ビルドした版(git describe)。ビルド前にtools/generate-version-header.ps1が書き出す
+// (TVTestのTVTestVersionHashGen.batと同じ仕組み)
+#if __has_include("TVCaption3Version.h")
+#include "TVCaption3Version.h"
+#endif
+#ifndef TVCAPTION3_VERSION_STRING
+#define TVCAPTION3_VERSION_STRING "unknown"
+#endif
 
 namespace
 {
@@ -22,7 +30,7 @@ const LONGLONG TTML_FALLBACK_MSEC = 3000;
 const LONGLONG TTML_MAX_LEAD_MSEC = 60000;
 
 const TCHAR INFO_PLUGIN_NAME[] = TEXT("TVCaption3");
-const TCHAR INFO_DESCRIPTION[] = TEXT("字幕を表示 (ver.1.2)");
+const TCHAR INFO_DESCRIPTION[] = TEXT("字幕を表示 (ver.1.2) ") TEXT(TVCAPTION3_VERSION_STRING);
 const int INFO_VERSION = 1;
 const TCHAR TV_CAPTION2_WINDOW_CLASS[] = TEXT("TVTest TVCaption3");
 
