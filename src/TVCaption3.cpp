@@ -19,6 +19,9 @@ const UINT WM_APP_RESET_CAPTION = WM_APP + 0;
 const UINT WM_APP_PROCESS_CAPTION = WM_APP + 1;
 const UINT WM_APP_DONE_MOVE = WM_APP + 2;
 const UINT WM_APP_RESET_OSDS = WM_APP + 4;
+// WM_APP_RESET_CAPTIONのlParam。時刻が飛んだだけ(シークなど)で、同じ番組の外字(TTMLの
+// SVGフォント)は残す
+const LPARAM RESET_CAPTION_KEEP_FONTS = 1;
 
 // TTMLの字幕を表示している間に取っておくB24のPESの数(字幕管理データは0.5秒ごとに届く)
 const size_t TTML_MAX_HELD_PES = 32;
@@ -974,7 +977,7 @@ LRESULT CALLBACK CTVCaption2::PaintingWndProc(HWND hwnd, UINT uMsg, WPARAM wPara
         pThis->ResetCaptionDecoder(STREAM_SUPERIMPOSE);
         pThis->m_captionRenderer[STREAM_CAPTION]->Flush();
         pThis->m_captionRenderer[STREAM_SUPERIMPOSE]->Flush();
-        pThis->ResetTtml();
+        pThis->ResetTtml(lParam == RESET_CAPTION_KEEP_FONTS);
         return 0;
     case WM_APP_PROCESS_CAPTION:
         pThis->ProcessTtmlCaption();
@@ -1378,7 +1381,9 @@ void CTVCaption2::DeactivateTtml(STREAM_INDEX index)
 }
 
 
-void CTVCaption2::ResetTtml()
+// fKeepFontsなら外字(SVGフォント)は捨てない。外字は字幕の文書と別に届くので、シークの
+// たびに捨てると、次に届くまで外字が表示されなくなる
+void CTVCaption2::ResetTtml(bool fKeepFonts)
 {
     {
         lock_recursive_mutex lock(m_streamLock);
@@ -1394,7 +1399,9 @@ void CTVCaption2::ResetTtml()
         m_ttmlQueue[index].clear();
         m_heldPes[index].clear();
     }
-    m_ttmlConverter.Reset();
+    if (!fKeepFonts) {
+        m_ttmlConverter.Reset();
+    }
 }
 
 
@@ -1682,7 +1689,7 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
 
                 // PCRの連続性チェック
                 if (((0x200000000 + pcr - m_viewerClockEstimator.GetStreamPcr()) & 0x1ffffffff) >= 1000 * PCR_PER_MSEC) {
-                    SendNotifyMessage(m_hwndPainting, WM_APP_RESET_CAPTION, 0, 0);
+                    SendNotifyMessage(m_hwndPainting, WM_APP_RESET_CAPTION, 0, RESET_CAPTION_KEEP_FONTS);
                     m_viewerClockEstimator.Reset();
                 }
                 m_viewerClockEstimator.SetStreamPcr(pcr);

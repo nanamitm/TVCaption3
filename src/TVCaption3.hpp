@@ -65,7 +65,7 @@ private:
     void ProcessTtmlCaption();
     void ScheduleTtmlDocument(const TtmlCaption::Document &document);
     void DeactivateTtml(STREAM_INDEX index);
-    void ResetTtml();
+    void ResetTtml(bool fKeepFonts = false);
     void NoteB24Pes(STREAM_INDEX index, const std::vector<BYTE> &pes);
     void RenderCaption(STREAM_INDEX index, bool fRedraw);
     void OnSize(STREAM_INDEX index, bool fFast = false);
