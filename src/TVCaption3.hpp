@@ -155,7 +155,8 @@ private:
     std::vector<TtmlEntry> m_ttmlQueue[STREAM_MAX];
     // TTMLで表示しているcomponent_tag。-1ならB24の字幕を表示している
     int m_ttmlComponentTag[STREAM_MAX];
-    // TTMLを表示している間に届いたB24のPES。B24の字幕に戻すときに表示し直す
+    // TTMLを表示している間に届いたB24の字幕のPES(文字スーパーは取っておかない)。B24の
+    // 字幕に戻すときに表示し直す
     std::vector<std::vector<BYTE>> m_heldPes[STREAM_MAX];
 
     // レンダラで合成する(疑似でない)OSD
