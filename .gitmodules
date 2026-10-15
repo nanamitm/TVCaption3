@@ -4,3 +4,6 @@
 [submodule "src/freetype"]
 	path = src/freetype
 	url = https://github.com/ubawurinna/freetype-windows-binaries.git
+[submodule "src/dantto4k"]
+	path = src/dantto4k
+	url = https://github.com/nanamitm/dantto4k.git

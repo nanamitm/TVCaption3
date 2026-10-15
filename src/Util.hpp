@@ -35,6 +35,7 @@ inline bool Is1SegPmtPid(int pid) { return 0x1FC8 <= pid && pid <= 0x1FCF; }
 static const int PCR_PER_MSEC = 90;
 
 #define H_262_VIDEO         0x02
+#define PRIVATE_SECTIONS    0x05
 #define PES_PRIVATE_DATA    0x06
 #define AVC_VIDEO           0x1B
 #define H_265_VIDEO         0x24
@@ -72,6 +73,8 @@ typedef struct {
     unsigned char   stream_type[256];
     unsigned short  pid[256]; // PESの一部に限定
     unsigned char   component_tag[256];
+    // dantto4kが4K/8K放送の字幕(ARIB-TTML)を載せるPID(registration_descriptorが'D4KA')。無ければ0
+    int             app_data_pid;
     PSI             psi;
 } PMT;
 

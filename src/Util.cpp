@@ -232,10 +232,25 @@ void extract_pmt(PMT *pmt, const unsigned char *payload, int payload_size, int u
         program_info_length = ((table[10]&0x03)<<8) | table[11];
 
         pmt->pid_count = 0;
+        pmt->app_data_pid = 0;
         pos = 3 + 9 + program_info_length;
         while (pos + 4 < 3 + pmt->psi.section_length - 4/*CRC32*/) {
             stream_type = table[pos];
             es_info_length = (table[pos+3]&0x03)<<8 | table[pos+4];
+            if (stream_type == PRIVATE_SECTIONS &&
+                pos + 5 + es_info_length <= 3 + pmt->psi.section_length - 4/*CRC32*/)
+            {
+                // registration_descriptor(format_identifierが'D4KA')を探す
+                for (info_pos = 0; info_pos + 2 < es_info_length; ) {
+                    const unsigned char *desc = table + pos + 5 + info_pos;
+                    if (desc[0] == 0x05 && desc[1] >= 4 && info_pos + 2 + desc[1] <= es_info_length &&
+                        desc[2] == 'D' && desc[3] == '4' && desc[4] == 'K' && desc[5] == 'A') {
+                        pmt->app_data_pid = (table[pos+1]&0x1f)<<8 | table[pos+2];
+                        break;
+                    }
+                    info_pos += 2 + desc[1];
+                }
+            }
             if ((stream_type == H_262_VIDEO ||
                  stream_type == PES_PRIVATE_DATA ||
                  stream_type == AVC_VIDEO ||
