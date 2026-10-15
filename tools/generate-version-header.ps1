@@ -1,0 +1,73 @@
+# Writes the version this build comes from to a C/C++ header, the way TVTest's
+# TVTestVersionHashGen.bat does: a pre-build step runs it, the header is not
+# committed (.gitignore) and the sources include it with __has_include.
+#
+# The version is `git describe --tags --always`, e.g. the commit "df8f8e8"
+# while the repository has no tags, with "-dirty" when there are uncommitted
+# changes, and "unknown" without git. Changes inside submodules (aribcaption,
+# freetype, dantto4k) do not count; a submodule moved to another commit does.
+# The header is rewritten only when it changes, so it does not cause rebuilds.
+#
+#   #define <Name>_VERSION_STRING   "df8f8e8"
+#   #define <Name>_VERSION_STRING_W L"df8f8e8"
+#   #define <Name>_VERSION_NUMBERS  2026,10,15,2   (VERSIONINFO; 0,0,0,0 without a vYYYYMMDD tag)
+param(
+    [Parameter(Mandatory)] [string]$OutFile,
+    [Parameter(Mandatory)] [string]$Name
+)
+$ErrorActionPreference = 'Stop'
+
+$version = $null
+try {
+    $output = & git -C $PSScriptRoot describe --tags --always 2>$null
+    if ($LASTEXITCODE -eq 0 -and $output) {
+        $version = "$output".Trim()
+        $changes = & git -C $PSScriptRoot status --porcelain --untracked-files=no --ignore-submodules=dirty 2>$null
+        if ($LASTEXITCODE -ne 0 -or $changes) {
+            $version += '-dirty'
+        }
+    }
+}
+catch {
+    # git is not installed
+}
+if (-not $version) {
+    $version = 'unknown'
+}
+
+$numbers = '0,0,0,0'
+if ($version -match '^v(\d{4})(\d{2})(\d{2})[a-z]?(?:-(\d+)-g)?') {
+    $commits = if ($Matches[4]) { [int]$Matches[4] } else { 0 }
+    $numbers = '{0},{1},{2},{3}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3], [Math]::Min($commits, 65535)
+}
+
+$content = "#define ${Name}_VERSION_STRING `"$version`"`r`n" +
+    "#define ${Name}_VERSION_STRING_W L`"$version`"`r`n" +
+    "#define ${Name}_VERSION_NUMBERS $numbers`r`n"
+# Projects built in parallel may run this for the same header at the same
+# time: take turns, so that one writes it and the others find it current.
+$fullPath = [IO.Path]::GetFullPath($OutFile)
+$sha = [Security.Cryptography.SHA1]::Create()
+$key = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($fullPath.ToLowerInvariant()))).Replace('-', '')
+$mutex = New-Object Threading.Mutex($false, "Local\generate-version-header-$key")
+try {
+    try {
+        [void]$mutex.WaitOne()
+    }
+    catch [Threading.AbandonedMutexException] {
+        # a previous run was killed while holding it
+    }
+    if ((Test-Path -LiteralPath $fullPath) -and [IO.File]::ReadAllText($fullPath) -ceq $content) {
+        return
+    }
+    $directory = Split-Path -Parent $fullPath
+    if ($directory) {
+        New-Item -ItemType Directory -Force $directory | Out-Null
+    }
+    [IO.File]::WriteAllText($fullPath, $content)
+    Write-Host "${Name} version: $version"
+}
+finally {
+    $mutex.ReleaseMutex()
+    $mutex.Dispose()
+}

@@ -15,3 +15,5 @@
 !*.wav
 !.gitignore
 !*.ps1
+# ビルド前にtools/generate-version-header.ps1が書き出す
+src/TVCaption3Version.h
