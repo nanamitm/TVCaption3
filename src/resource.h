@@ -42,3 +42,4 @@
 #define IDC_STATIC_CAPFOLDER                    1033
 #define IDC_CHECK_CUST_ROMSOUND                 1040
 #define IDC_CHECK_ESTIMATE_VIEWER_DELAY         1041
+#define IDC_CHECK_TTML_CAPTION                  1042

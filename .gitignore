@@ -14,3 +14,4 @@
 !*.vcxproj.filters
 !*.wav
 !.gitignore
+!*.ps1

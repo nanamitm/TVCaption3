@@ -2,6 +2,7 @@
 #define INCLUDE_TV_CAPTION3_HPP
 
 #include "aribcaption/aribcaption.hpp"
+#include "TtmlCaption.hpp"
 #include "OsdCompositor.h"
 #include "PseudoOSD.hpp"
 #include "Util.hpp"
@@ -60,6 +61,12 @@ private:
     bool ResetCaptionDecoder(STREAM_INDEX index, aribcaption::Context *context = nullptr);
     bool ResetCaptionContext(STREAM_INDEX index);
     void ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue);
+    LONGLONG GetShiftPcr(STREAM_INDEX index);
+    void ProcessTtmlCaption();
+    void ScheduleTtmlDocument(const TtmlCaption::Document &document);
+    void DeactivateTtml(STREAM_INDEX index);
+    void ResetTtml();
+    void NoteB24Pes(STREAM_INDEX index, const std::vector<BYTE> &pes);
     void RenderCaption(STREAM_INDEX index, bool fRedraw);
     void OnSize(STREAM_INDEX index, bool fFast = false);
     static BOOL CALLBACK StreamCallback(BYTE *pData, void *pClientData);
@@ -93,6 +100,8 @@ private:
     bool m_fReplaceDrcs;
     bool m_fIgnoreSmall;
     tstring m_romSoundList;
+    // 4K/8K放送の字幕をB24に変換されたものではなくTTMLから表示する
+    std::atomic_bool m_fTtmlCaption;
     bool m_fInitializeSettingsDlg;
 
     // キャプチャ
@@ -126,6 +135,28 @@ private:
     std::pair<int, std::vector<BYTE>> m_caption2Pes;
     std::vector<std::vector<BYTE>> m_caption1PesQueue;
     std::vector<std::vector<BYTE>> m_caption2PesQueue;
+
+    // 4K/8K放送の字幕(ARIB-TTML)。dantto4kがm_appDataPidに載せたものを受け取る
+    int m_appDataPid;
+    TtmlCaption::SectionReceiver m_ttmlReceiver;
+    std::vector<TtmlCaption::Document> m_ttmlDocumentQueue;
+    // TTMLの文書が最後に届いたときと、TTMLが届かないままB24の字幕文が届いたときのPCR。
+    // どちらも受信した時点(ストリームのPCR)で比べる
+    LONGLONG m_ttmlLastArrivalPcr[STREAM_MAX];
+    LONGLONG m_b24OnlySincePcr[STREAM_MAX];
+    // ここからは字幕描画のスレッドだけで使う
+    struct TtmlEntry {
+        // 表示する時刻(PTS)。immediateなら届いた時点で表示する
+        LONGLONG pts;
+        bool immediate;
+        aribcaption::Caption caption;
+    };
+    TtmlCaption::Converter m_ttmlConverter;
+    std::vector<TtmlEntry> m_ttmlQueue[STREAM_MAX];
+    // TTMLで表示しているcomponent_tag。-1ならB24の字幕を表示している
+    int m_ttmlComponentTag[STREAM_MAX];
+    // TTMLを表示している間に届いたB24のPES。B24の字幕に戻すときに表示し直す
+    std::vector<std::vector<BYTE>> m_heldPes[STREAM_MAX];
 
     // レンダラで合成する(疑似でない)OSD
     COsdCompositor m_osdCompositor;

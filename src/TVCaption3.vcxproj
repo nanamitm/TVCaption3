@@ -237,6 +237,7 @@
     <ClInclude Include="OsdCompositor.h" />
     <ClInclude Include="PseudoOSD.hpp" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="TtmlCaption.hpp" />
     <ClInclude Include="TVCaption3.hpp" />
     <ClInclude Include="TVTestPlugin.h" />
     <ClInclude Include="Util.hpp" />
@@ -273,6 +274,11 @@
     <ClCompile Include="aribcaption\src\renderer\text_renderer_freetype.cpp" />
     <ClCompile Include="OsdCompositor.cpp" />
     <ClCompile Include="PseudoOSD.cpp" />
+    <!-- 4K/8K放送の字幕(ARIB-TTML)の解析はdantto4kのparser/resolverを使う(C++20) -->
+    <ClCompile Include="TtmlCaption.cpp;dantto4k\src\pugixml.cpp;dantto4k\src\ttml\parser.cpp;dantto4k\src\ttml\resolver.cpp;dantto4k\src\ttml\style.cpp">
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>dantto4k\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="TVCaption3.cpp" />
     <ClCompile Include="Util.cpp" />
     <ClCompile Include="ViewerClockEstimator.cpp" />

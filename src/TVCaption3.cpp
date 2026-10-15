@@ -12,6 +12,15 @@ const UINT WM_APP_PROCESS_CAPTION = WM_APP + 1;
 const UINT WM_APP_DONE_MOVE = WM_APP + 2;
 const UINT WM_APP_RESET_OSDS = WM_APP + 4;
 
+// TTMLの字幕を表示している間に取っておくB24のPESの数(字幕管理データは0.5秒ごとに届く)
+const size_t TTML_MAX_HELD_PES = 32;
+// B24の字幕文が届いてからこれだけ経ってもTTMLが届かなければ、TTMLの無いストリーム(古い
+// dantto4kで変換した録画など)に変わったとみなしてB24の字幕に戻す。dantto4kは同じ字幕の
+// TTMLとB24を同時に送るので、普段は数ミリ秒しか離れない
+const LONGLONG TTML_FALLBACK_MSEC = 3000;
+// これより先の字幕は時刻がおかしいとみなして今に合わせる
+const LONGLONG TTML_MAX_LEAD_MSEC = 60000;
+
 const TCHAR INFO_PLUGIN_NAME[] = TEXT("TVCaption3");
 const TCHAR INFO_DESCRIPTION[] = TEXT("字幕を表示 (ver.1.2)");
 const int INFO_VERSION = 1;
@@ -61,8 +70,10 @@ CTVCaption2::CTVCaption2()
     , m_pcrPid(-1)
     , m_caption1Pid(-1)
     , m_caption2Pid(-1)
+    , m_appDataPid(-1)
 {
     m_szCaptureSaveFormat[0] = 0;
+    m_fTtmlCaption = true;
 
     for (int index = 0; index < STREAM_MAX; ++index) {
         m_showFlags[index] = 0;
@@ -70,6 +81,9 @@ CTVCaption2::CTVCaption2()
         m_osdShowCount[index] = 0;
         m_clearPts[index] = -1;
         m_renderedPts[index] = -1;
+        m_ttmlComponentTag[index] = -1;
+        m_ttmlLastArrivalPcr[index] = -1;
+        m_b24OnlySincePcr[index] = -1;
     }
     PAT zeroPat = {};
     m_pat = zeroPat;
@@ -331,6 +345,7 @@ bool CTVCaption2::EnablePlugin(bool fEnable)
             m_caption2Pes.second.clear();
             m_caption1PesQueue.clear();
             m_caption2PesQueue.clear();
+            ResetTtml();
 
             // 字幕描画処理ウィンドウ作成
             m_hwndPainting = CreateWindow(TV_CAPTION2_WINDOW_CLASS, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, g_hinstDLL, this);
@@ -403,6 +418,7 @@ void CTVCaption2::LoadSettings()
     m_jpegQuality = GetBufferedProfileInt(vbuf.data(), TEXT("JpegQuality"), 90);
     m_pngCompressionLevel = GetBufferedProfileInt(vbuf.data(), TEXT("PngCompressionLevel"), 6);
     m_settingsIndex = GetBufferedProfileInt(vbuf.data(), TEXT("SettingsIndex"), 0);
+    m_fTtmlCaption = GetBufferedProfileInt(vbuf.data(), TEXT("TtmlCaption"), 1) != 0;
 
     // ここからはセクション固有
     if (m_settingsIndex > 0) {
@@ -453,6 +469,7 @@ void CTVCaption2::SaveSettings() const
     WritePrivateProfileInt(section, TEXT("JpegQuality"), m_jpegQuality, m_iniPath.c_str());
     WritePrivateProfileInt(section, TEXT("PngCompressionLevel"), m_pngCompressionLevel, m_iniPath.c_str());
     WritePrivateProfileInt(section, TEXT("SettingsIndex"), m_settingsIndex, m_iniPath.c_str());
+    WritePrivateProfileInt(section, TEXT("TtmlCaption"), m_fTtmlCaption, m_iniPath.c_str());
 
     // ここからはセクション固有
     if (m_settingsIndex > 0) {
@@ -949,8 +966,10 @@ LRESULT CALLBACK CTVCaption2::PaintingWndProc(HWND hwnd, UINT uMsg, WPARAM wPara
         pThis->ResetCaptionDecoder(STREAM_SUPERIMPOSE);
         pThis->m_captionRenderer[STREAM_CAPTION]->Flush();
         pThis->m_captionRenderer[STREAM_SUPERIMPOSE]->Flush();
+        pThis->ResetTtml();
         return 0;
     case WM_APP_PROCESS_CAPTION:
+        pThis->ProcessTtmlCaption();
         pThis->ProcessCaption(pThis->m_caption1PesQueue);
         pThis->ProcessCaption(pThis->m_caption2PesQueue);
         return 0;
@@ -1135,6 +1154,15 @@ void CTVCaption2::ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue)
         if (pes.empty() || payloadPos >= static_cast<int>(pes.size()) || !m_fNeedtoShow) {
             continue;
         }
+        if (m_ttmlComponentTag[index] >= 0) {
+            // TTMLで表示しているので、B24に変換された同じ字幕は表示しない。TTMLが届かなく
+            // なってB24の字幕に戻すときに表示し直せるよう、直近のものを取っておく
+            m_heldPes[index].push_back(std::move(pes));
+            if (m_heldPes[index].size() > TTML_MAX_HELD_PES) {
+                m_heldPes[index].erase(m_heldPes[index].begin());
+            }
+            continue;
+        }
 
         aribcaption::DecodeResult decodeResult;
         auto status = aribcaption::DecodeStatus::kError;
@@ -1168,6 +1196,223 @@ void CTVCaption2::ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue)
             RenderCaption(index, false);
         }
     }
+}
+
+
+// 表示遅延を加味したビューアのPCR。分からなければ-1
+LONGLONG CTVCaption2::GetShiftPcr(STREAM_INDEX index)
+{
+    LONGLONG pcr = m_viewerClockEstimator.GetViewerPcr();
+    if (pcr < 0) {
+        return -1;
+    }
+    return (0x200000000 + pcr + (450 - min(max(m_delayTime[index], -5000), 5000)) * PCR_PER_MSEC) & 0x1ffffffff;
+}
+
+
+// 4K/8K放送の字幕(ARIB-TTML)を表示時刻になったものから表示する
+void CTVCaption2::ProcessTtmlCaption()
+{
+    std::vector<TtmlCaption::Document> documents;
+    LONGLONG streamPcr;
+    LONGLONG b24OnlySincePcr[STREAM_MAX];
+    {
+        lock_recursive_mutex lock(m_streamLock);
+        documents.swap(m_ttmlDocumentQueue);
+        streamPcr = m_viewerClockEstimator.GetStreamPcr();
+        std::copy(m_b24OnlySincePcr, m_b24OnlySincePcr + STREAM_MAX, b24OnlySincePcr);
+    }
+    if (!m_fTtmlCaption) {
+        for (int index = 0; index < STREAM_MAX; ++index) {
+            if (m_ttmlComponentTag[index] >= 0) {
+                DeactivateTtml(static_cast<STREAM_INDEX>(index));
+            }
+        }
+        return;
+    }
+    for (const auto &document : documents) {
+        if (document.dataType == 6) {
+            // 外字(SVGフォント)
+            m_ttmlConverter.AddFont(document.data);
+        }
+        else if (document.dataType == 0) {
+            ScheduleTtmlDocument(document);
+        }
+    }
+
+    for (int i = 0; i < STREAM_MAX; ++i) {
+        STREAM_INDEX index = static_cast<STREAM_INDEX>(i);
+        if (m_ttmlComponentTag[index] < 0) {
+            continue;
+        }
+        // TTMLが届かずにB24の字幕文だけが届くようになったらB24の字幕に戻す
+        if (b24OnlySincePcr[index] >= 0 && streamPcr >= 0) {
+            LONGLONG elapsed = (0x200000000 + streamPcr - b24OnlySincePcr[index]) & 0x1ffffffff;
+            if (elapsed > TTML_FALLBACK_MSEC * PCR_PER_MSEC && elapsed < 0x100000000) {
+                DeactivateTtml(index);
+                continue;
+            }
+        }
+        LONGLONG shiftPcr = GetShiftPcr(index);
+        auto &queue = m_ttmlQueue[index];
+        size_t done = 0;
+        for (; done < queue.size(); ++done) {
+            TtmlEntry &entry = queue[done];
+            LONGLONG pts = entry.pts;
+            if (entry.immediate) {
+                pts = shiftPcr >= 0 ? shiftPcr : 0;
+            }
+            else {
+                if (shiftPcr < 0) {
+                    break;
+                }
+                LONGLONG ptsPcrDiff = (0x200000000 + entry.pts - shiftPcr) & 0x1ffffffff;
+                if (ptsPcrDiff != 0 && ptsPcrDiff < 0x100000000) {
+                    // 表示タイミングまで待つ
+                    break;
+                }
+            }
+            if (m_fNeedtoShow) {
+                entry.caption.pts = pts;
+                m_captionRenderer[index]->AppendCaption(std::move(entry.caption));
+                m_renderedPts[index] = pts;
+                RenderCaption(index, false);
+            }
+        }
+        queue.erase(queue.begin(), queue.begin() + done);
+    }
+}
+
+
+// TTMLの文書を表示の切り替わりごとのCaptionにして、表示する時刻を決める
+void CTVCaption2::ScheduleTtmlDocument(const TtmlCaption::Document &document)
+{
+    if (document.componentTag < 0x30 || document.componentTag > 0x3f) {
+        return;
+    }
+    STREAM_INDEX index = document.componentTag >= 0x38 ? STREAM_SUPERIMPOSE : STREAM_CAPTION;
+    int &selected = m_ttmlComponentTag[index];
+    if (selected >= 0 && document.componentTag > selected) {
+        // 複数の言語があれば番号の小さいほうを表示する
+        return;
+    }
+    bool immediate = document.tmd == 0x0f || document.pts < 0;
+    LONGLONG shiftPcr = GetShiftPcr(index);
+    if (!immediate && shiftPcr < 0) {
+        // 映像の時刻がまだ分からない
+        return;
+    }
+    std::vector<TtmlCaption::Segment> segments;
+    if (!m_ttmlConverter.Convert(document, index == STREAM_SUPERIMPOSE, segments) || segments.empty()) {
+        return;
+    }
+    if (selected != document.componentTag) {
+        if (selected < 0) {
+            // B24に変換された同じ字幕を止める。表示中のものはこのあとのTTMLで置き換わる
+            m_clearPts[index] = -1;
+            m_heldPes[index].clear();
+            m_pApp->AddLog(index == STREAM_CAPTION ? TEXT("4K/8K放送の字幕をTTMLから表示します。") :
+                                                     TEXT("4K/8K放送の文字スーパーをTTMLから表示します。"));
+        }
+        m_ttmlQueue[index].clear();
+        selected = document.componentTag;
+    }
+
+    auto &queue = m_ttmlQueue[index];
+    if (immediate) {
+        // 時刻制御なし: 届いた時点で表示する
+        queue.clear();
+        queue.push_back({0, true, std::move(segments.front().caption)});
+        return;
+    }
+    const LONGLONG mask = 0x1ffffffff;
+    LONGLONG first = segments.front().timeMsec * PCR_PER_MSEC;
+    LONGLONG base = document.pts;
+    LONGLONG lead = (0x200000000 + base + first - shiftPcr) & mask;
+    if (lead >= 0x100000000 || lead > TTML_MAX_LEAD_MSEC * PCR_PER_MSEC) {
+        // 遅れて届いた文書は、最初の字幕が今になるよう全体をずらす(表示時間を保つ)。
+        // dantto4kのB24変換と同じ扱い
+        base = (0x200000000 + shiftPcr - first) & mask;
+    }
+    LONGLONG start = (base + first) & mask;
+    // この文書の最初の字幕より後に予定していた前の文書の表示はやめる
+    queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const TtmlEntry &entry) {
+        return entry.immediate || ((0x200000000 + entry.pts - start) & mask) < 0x100000000;
+    }), queue.end());
+    for (auto &segment : segments) {
+        queue.push_back({(base + segment.timeMsec * PCR_PER_MSEC) & mask, false, std::move(segment.caption)});
+    }
+}
+
+
+// TTMLで表示するのをやめてB24の字幕に戻す
+void CTVCaption2::DeactivateTtml(STREAM_INDEX index)
+{
+    if (m_ttmlComponentTag[index] < 0) {
+        return;
+    }
+    m_ttmlComponentTag[index] = -1;
+    m_ttmlQueue[index].clear();
+    // 表示中のTTMLの字幕を消す
+    m_renderedPts[index] = -1;
+    RenderCaption(index, false);
+    // 取っておいたB24の字幕から表示し直す
+    {
+        lock_recursive_mutex lock(m_streamLock);
+        auto &pesQueue = index == STREAM_CAPTION ? m_caption1PesQueue : m_caption2PesQueue;
+        pesQueue.insert(pesQueue.begin(), std::make_move_iterator(m_heldPes[index].begin()),
+                        std::make_move_iterator(m_heldPes[index].end()));
+        m_b24OnlySincePcr[index] = -1;
+    }
+    m_heldPes[index].clear();
+    m_pApp->AddLog(index == STREAM_CAPTION ? TEXT("4K/8K放送の字幕をB24から表示します。") :
+                                             TEXT("4K/8K放送の文字スーパーをB24から表示します。"));
+}
+
+
+void CTVCaption2::ResetTtml()
+{
+    {
+        lock_recursive_mutex lock(m_streamLock);
+        m_ttmlReceiver.Reset();
+        m_ttmlDocumentQueue.clear();
+        for (int index = 0; index < STREAM_MAX; ++index) {
+            m_ttmlLastArrivalPcr[index] = -1;
+            m_b24OnlySincePcr[index] = -1;
+        }
+    }
+    for (int index = 0; index < STREAM_MAX; ++index) {
+        m_ttmlComponentTag[index] = -1;
+        m_ttmlQueue[index].clear();
+        m_heldPes[index].clear();
+    }
+    m_ttmlConverter.Reset();
+}
+
+
+// B24の字幕のPESを受信した(ストリームのスレッドでm_streamLockを持って呼ぶ)。TTMLが
+// 届かないまま字幕文が届いたら、その時刻を覚えておく
+void CTVCaption2::NoteB24Pes(STREAM_INDEX index, const std::vector<BYTE> &pes)
+{
+    PES_HEADER header;
+    extract_pes_header(&header, pes.data(), static_cast<int>(pes.size()));
+    if (!header.packet_start_code_prefix || header.pes_payload_pos >= static_cast<int>(pes.size()) ||
+        !TtmlCaption::IsB24CaptionStatement(pes.data() + header.pes_payload_pos, pes.size() - header.pes_payload_pos)) {
+        return;
+    }
+    LONGLONG pcr = m_viewerClockEstimator.GetStreamPcr();
+    if (pcr < 0 || m_b24OnlySincePcr[index] >= 0) {
+        return;
+    }
+    LONGLONG last = m_ttmlLastArrivalPcr[index];
+    if (last >= 0) {
+        LONGLONG elapsed = (0x200000000 + pcr - last) & 0x1ffffffff;
+        if (elapsed <= TTML_FALLBACK_MSEC * PCR_PER_MSEC || elapsed >= 0x100000000) {
+            // 同じ字幕のTTMLが届いている
+            return;
+        }
+    }
+    m_b24OnlySincePcr[index] = pcr;
 }
 
 
@@ -1351,7 +1596,7 @@ LRESULT CALLBACK CTVCaption2::VideoStreamCallback(DWORD Format, const void *pDat
 
 namespace
 {
-void GetPidsFromVideoPmt(int *pPmtPid, int *pPcrPid, int *pCaption1Pid, int *pCaption2Pid, int videoPid, const PAT *pPat)
+void GetPidsFromVideoPmt(int *pPmtPid, int *pPcrPid, int *pCaption1Pid, int *pCaption2Pid, int *pAppDataPid, int videoPid, const PAT *pPat)
 {
     for (size_t i = 0; i < pPat->pmt.size(); ++i) {
         const PMT *pPmt = &pPat->pmt[i];
@@ -1377,6 +1622,7 @@ void GetPidsFromVideoPmt(int *pPmtPid, int *pPcrPid, int *pCaption1Pid, int *pCa
             *pPcrPid = pPmt->pcr_pid;
             *pCaption1Pid = privPid[0];
             *pCaption2Pid = privPid[1];
+            *pAppDataPid = pPmt->app_data_pid > 0 ? pPmt->app_data_pid : -1;
             return;
         }
     }
@@ -1384,6 +1630,7 @@ void GetPidsFromVideoPmt(int *pPmtPid, int *pPcrPid, int *pCaption1Pid, int *pCa
     *pPcrPid = -1;
     *pCaption1Pid = -1;
     *pCaption2Pid = -1;
+    *pAppDataPid = -1;
 }
 }
 
@@ -1396,6 +1643,7 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
         m_pcrPid = -1;
         m_caption1Pid = -1;
         m_caption2Pid = -1;
+        m_appDataPid = -1;
         m_fResetPat = false;
     }
 
@@ -1447,7 +1695,7 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
         int pmtPid;
         if (pid == 0) {
             extract_pat(&m_pat, pPayload, payloadSize, unitStart, counter);
-            GetPidsFromVideoPmt(&pmtPid, &m_pcrPid, &m_caption1Pid, &m_caption2Pid, m_videoPid, &m_pat);
+            GetPidsFromVideoPmt(&pmtPid, &m_pcrPid, &m_caption1Pid, &m_caption2Pid, &m_appDataPid, m_videoPid, &m_pat);
             if (pmtPid >= 0 && Is1SegPmtPid(pmtPid) != m_fProfileC) {
                 SendNotifyMessage(m_hwndPainting, WM_APP_RESET_CAPTION, Is1SegPmtPid(pmtPid) ? 2 : 1, 0);
             }
@@ -1457,7 +1705,7 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
         for (size_t i = 0; i < m_pat.pmt.size(); ++i) {
             if (pid == m_pat.pmt[i].pmt_pid/* && pid != 0*/) {
                 extract_pmt(&m_pat.pmt[i], pPayload, payloadSize, unitStart, counter);
-                GetPidsFromVideoPmt(&pmtPid, &m_pcrPid, &m_caption1Pid, &m_caption2Pid, m_videoPid, &m_pat);
+                GetPidsFromVideoPmt(&pmtPid, &m_pcrPid, &m_caption1Pid, &m_caption2Pid, &m_appDataPid, m_videoPid, &m_pat);
                 if (pmtPid >= 0 && Is1SegPmtPid(pmtPid) != m_fProfileC) {
                     SendNotifyMessage(m_hwndPainting, WM_APP_RESET_CAPTION, Is1SegPmtPid(pmtPid) ? 2 : 1, 0);
                 }
@@ -1492,10 +1740,32 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
             if (pes.size() >= 6 + pesPacketLength) {
                 // PESが蓄積された
                 pes.resize(6 + pesPacketLength);
+                NoteB24Pes(pid == m_caption1Pid ? STREAM_CAPTION : STREAM_SUPERIMPOSE, pes);
                 (pid == m_caption1Pid ? m_caption1PesQueue : m_caption2PesQueue).push_back(pes);
                 SendNotifyMessage(m_hwndPainting, WM_APP_PROCESS_CAPTION, 0, 0);
                 pes.clear();
             }
+        }
+    }
+
+    // 4K/8K放送の字幕(ARIB-TTML)
+    if (!scr && pid == m_appDataPid && m_fTtmlCaption) {
+        lock_recursive_mutex lock(m_streamLock);
+        m_ttmlReceiver.FeedPacket(pPacket);
+        std::vector<TtmlCaption::Document> documents = m_ttmlReceiver.TakeDocuments();
+        if (!documents.empty()) {
+            LONGLONG pcr = m_viewerClockEstimator.GetStreamPcr();
+            for (auto &document : documents) {
+                if (document.dataType == 0 && document.componentTag >= 0x30 && document.componentTag <= 0x3f) {
+                    int index = document.componentTag >= 0x38 ? STREAM_SUPERIMPOSE : STREAM_CAPTION;
+                    m_ttmlLastArrivalPcr[index] = pcr;
+                    m_b24OnlySincePcr[index] = -1;
+                }
+                if (m_ttmlDocumentQueue.size() < 64) {
+                    m_ttmlDocumentQueue.push_back(std::move(document));
+                }
+            }
+            SendNotifyMessage(m_hwndPainting, WM_APP_PROCESS_CAPTION, 0, 0);
         }
     }
 
@@ -1555,6 +1825,7 @@ void CTVCaption2::InitializeSettingsDlg(HWND hDlg)
         GetPrivateProfileInt(TEXT("Settings"), TEXT("EnOsdCompositor"), 0, m_iniPath.c_str()) != 0 ? BST_CHECKED : BST_UNCHECKED);
 
     CheckDlgButton(hDlg, IDC_CHECK_ESTIMATE_VIEWER_DELAY, m_viewerClockEstimator.GetEnabled() ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_CHECK_TTML_CAPTION, m_fTtmlCaption ? BST_CHECKED : BST_UNCHECKED);
 
     SetDlgItemText(hDlg, IDC_EDIT_CAPFOLDER, m_captureFolder.c_str());
     SendDlgItemMessage(hDlg, IDC_EDIT_CAPFOLDER, EM_LIMITTEXT, MAX_PATH - 1, 0);
@@ -1635,6 +1906,11 @@ INT_PTR CTVCaption2::ProcessSettingsDlg(HWND hDlg, UINT uMsg, WPARAM wParam, LPA
             break;
         case IDC_CHECK_ESTIMATE_VIEWER_DELAY:
             m_viewerClockEstimator.SetEnabled(IsDlgButtonChecked(hDlg, IDC_CHECK_ESTIMATE_VIEWER_DELAY) != BST_UNCHECKED);
+            fSave = true;
+            break;
+        case IDC_CHECK_TTML_CAPTION:
+            // 無効にするとB24の字幕に戻る(ProcessTtmlCaption)
+            m_fTtmlCaption = IsDlgButtonChecked(hDlg, IDC_CHECK_TTML_CAPTION) != BST_UNCHECKED;
             fSave = true;
             break;
         case IDC_EDIT_CAPFOLDER:

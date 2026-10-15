@@ -225,6 +225,9 @@
     <ClInclude Include="Util.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="TtmlCaption.hpp">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="OsdCompositor.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -315,6 +318,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="Util.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="TtmlCaption.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="OsdCompositor.cpp">
