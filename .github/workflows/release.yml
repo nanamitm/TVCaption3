@@ -1,0 +1,105 @@
+name: Release
+
+# タグ (v*) を push するとx86/x64をビルドしてリリースを作る。PRではビルドとテストだけを行う
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v20261015)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    # windows-latestはVS18系でv143ツールセットが無いため固定する
+    runs-on: windows-2022
+
+    strategy:
+      matrix:
+        include:
+          - platform: x86
+            arch: x86
+            output: src/Release
+          - platform: x64
+            arch: x64
+            output: src/x64/Release
+
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        # libaribcaption、freetype、dantto4k (TTMLのパーサ) をサブモジュールとして取り込んで
+        # ビルドしている。dantto4kの中のサブモジュール (tsduck、asio) は使わないので取得しない
+        submodules: true
+        # ビルドした版 (git describe --tags) を埋め込むので、履歴とタグを取得する
+        fetch-depth: 0
+
+    - name: Get version
+      id: version
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $v = "${{ github.event.inputs.version }}"
+        } elseif ("${{ github.ref_type }}" -eq "tag") {
+          $v = "${{ github.ref_name }}"
+        } else {
+          $v = (git describe --tags --always).Trim()
+        }
+        Write-Output "VERSION=$v" >> $env:GITHUB_OUTPUT
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Build tvtp
+      run: msbuild src/TVCaption3.sln /m /p:Configuration=Release /p:Platform=${{ matrix.platform }} /p:PlatformToolset=v143
+
+    # TTMLの字幕の受信と変換のテスト。x64で単独ビルドするので1つの構成だけで走らせる
+    - name: Run tests
+      if: matrix.arch == 'x64'
+      run: ./test/run-tests.ps1
+
+    - name: Package
+      env:
+        VERSION: ${{ steps.version.outputs.VERSION }}
+      run: |
+        $name = "TVCaption3-$env:VERSION-${{ matrix.arch }}"
+        New-Item -ItemType Directory $name | Out-Null
+        Copy-Item "${{ matrix.output }}/TVCaption3.tvtp" $name
+        Copy-Item Readme.txt, License.txt $name
+        $version = (Get-Item "$name/TVCaption3.tvtp").VersionInfo.FileVersion
+        Write-Output "TVCaption3.tvtp version: $version"
+        Compress-Archive -Path $name -DestinationPath "$name.zip"
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: TVCaption3-${{ steps.version.outputs.VERSION }}-${{ matrix.arch }}
+        path: TVCaption3-${{ steps.version.outputs.VERSION }}-${{ matrix.arch }}.zip
+
+  release:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        path: artifacts/
+        merge-multiple: true
+
+    - uses: softprops/action-gh-release@v3
+      with:
+        tag_name: ${{ needs.build.outputs.version }}
+        name: ${{ needs.build.outputs.version }}
+        files: artifacts/*.zip
+        generate_release_notes: true
