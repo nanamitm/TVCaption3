@@ -62,7 +62,62 @@ void TestShortVideoPes()
 
 struct CaptionPipelineTest
 {
-    static void Run() { TestShortVideoPes(); }
+    static void TestAdaptationOnly()
+    {
+        for (bool superimpose : {false, true}) {
+            CTVCaption2 plugin;
+            plugin.m_caption1Pid = 0x100;
+            plugin.m_caption2Pid = 0x101;
+            int pid = superimpose ? 0x101 : 0x100;
+            std::vector<BYTE> pes(400, 0);
+            pes[2] = 1;
+            pes[3] = 0xBF;
+            pes[4] = static_cast<BYTE>((pes.size() - 6) >> 8);
+            pes[5] = static_cast<BYTE>(pes.size() - 6);
+            auto packet = [&](size_t offset, int counter) {
+                std::vector<BYTE> ts(188, 0xFF);
+                ts[0] = 0x47;
+                ts[1] = static_cast<BYTE>((offset == 0 ? 0x40 : 0) | (pid >> 8));
+                ts[2] = static_cast<BYTE>(pid);
+                ts[3] = static_cast<BYTE>(0x10 | counter);
+                size_t count = std::min<size_t>(184, pes.size() - offset);
+                std::copy_n(pes.begin() + offset, count, ts.begin() + 4);
+                return ts;
+            };
+            auto first = packet(0, 4);
+            plugin.ProcessPacket(first.data());
+            auto &partial = superimpose ? plugin.m_caption2Pes.second : plugin.m_caption1Pes.second;
+            auto &queue = superimpose ? plugin.m_caption2PesQueue : plugin.m_caption1PesQueue;
+            Check(partial.size() == 184, "the first TS packet starts a partial B24 PES");
+
+            std::vector<BYTE> adaptation(188, 0);
+            adaptation[0] = 0x47;
+            adaptation[1] = static_cast<BYTE>(pid >> 8);
+            adaptation[2] = static_cast<BYTE>(pid);
+            adaptation[3] = 0x24; // adaptation-only、counterは前のまま
+            adaptation[4] = 183;
+            plugin.ProcessPacket(adaptation.data());
+            Check(partial.size() == 184, "adaptation-only TS preserves the partial B24 PES");
+            auto second = packet(184, 5);
+            auto last = packet(368, 6);
+            plugin.ProcessPacket(second.data());
+            plugin.ProcessPacket(last.data());
+            Check(queue.size() == 1 && queue.front() == pes, "B24 PES completes across an adaptation-only packet");
+
+            queue.clear();
+            plugin.ProcessPacket(first.data());
+            second[3] = 0x16; // 本当の欠落は引き続き検出する
+            plugin.ProcessPacket(second.data());
+            plugin.ProcessPacket(last.data());
+            Check(queue.empty() && partial.empty(), "a genuine payload continuity loss still drops the PES");
+        }
+    }
+
+    static void Run()
+    {
+        TestShortVideoPes();
+        TestAdaptationOnly();
+    }
 };
 
 int main()

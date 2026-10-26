@@ -1735,7 +1735,8 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
     }
 
     // 字幕か文字スーパーのストリームを取得
-    if (!scr && (pid == m_caption1Pid || pid == m_caption2Pid)) {
+    // adaptation-onlyのパケットではcounterが進まない。PESの組み立てはpayloadがあるときだけ
+    if (!scr && payloadSize > 0 && (pid == m_caption1Pid || pid == m_caption2Pid)) {
         lock_recursive_mutex lock(m_streamLock);
 
         std::pair<int, std::vector<BYTE>> &pesPair = pid == m_caption1Pid ? m_caption1Pes : m_caption2Pes;
