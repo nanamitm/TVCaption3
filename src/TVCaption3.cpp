@@ -94,7 +94,7 @@ CTVCaption2::CTVCaption2()
         m_clearPts[index] = -1;
         m_renderedPts[index] = -1;
         m_ttmlComponentTag[index] = -1;
-        m_ttmlLastArrivalPcr[index] = -1;
+        m_ttmlLastAcceptedPcr[index] = -1;
         m_b24OnlySincePcr[index] = -1;
     }
     PAT zeroPat = {};
@@ -1231,13 +1231,9 @@ LONGLONG CTVCaption2::GetShiftPcr(STREAM_INDEX index)
 void CTVCaption2::ProcessTtmlCaption()
 {
     std::vector<TtmlCaption::Document> documents;
-    LONGLONG streamPcr;
-    LONGLONG b24OnlySincePcr[STREAM_MAX];
     {
         lock_recursive_mutex lock(m_streamLock);
         documents.swap(m_ttmlDocumentQueue);
-        streamPcr = m_viewerClockEstimator.GetStreamPcr();
-        std::copy(m_b24OnlySincePcr, m_b24OnlySincePcr + STREAM_MAX, b24OnlySincePcr);
     }
     if (!m_fTtmlCaption) {
         m_pendingTtmlDocuments.clear();
@@ -1273,6 +1269,15 @@ void CTVCaption2::ProcessTtmlCaption()
         if (document.dataType == 0) {
             ScheduleTtmlDocument(document, tick);
         }
+    }
+
+    // この回で受理できた文書が復帰待ちを解除していることを反映してから判定する
+    LONGLONG streamPcr;
+    LONGLONG b24OnlySincePcr[STREAM_MAX];
+    {
+        lock_recursive_mutex lock(m_streamLock);
+        streamPcr = m_viewerClockEstimator.GetStreamPcr();
+        std::copy(m_b24OnlySincePcr, m_b24OnlySincePcr + STREAM_MAX, b24OnlySincePcr);
     }
 
     for (int i = 0; i < STREAM_MAX; ++i) {
@@ -1352,6 +1357,12 @@ void CTVCaption2::ScheduleTtmlDocument(const TtmlCaption::Document &document, DW
     m_pendingTtmlDocuments.erase(std::remove_if(m_pendingTtmlDocuments.begin(), m_pendingTtmlDocuments.end(),
         [&](const PendingTtmlDocument &entry) { return entry.document.componentTag == document.componentTag; }),
         m_pendingTtmlDocuments.end());
+    {
+        // 表示する言語を正常に変換できた場合だけ、B24への復帰待ちを解除する
+        lock_recursive_mutex lock(m_streamLock);
+        m_ttmlLastAcceptedPcr[index] = m_viewerClockEstimator.GetStreamPcr();
+        m_b24OnlySincePcr[index] = -1;
+    }
     if (selected != document.componentTag) {
         if (selected < 0) {
             // B24に変換された同じ字幕を止める。表示中のものはこのあとのTTMLで置き換わる
@@ -1430,7 +1441,7 @@ void CTVCaption2::ResetTtml(bool fKeepFonts)
         m_ttmlReceiver.Reset();
         m_ttmlDocumentQueue.clear();
         for (int index = 0; index < STREAM_MAX; ++index) {
-            m_ttmlLastArrivalPcr[index] = -1;
+            m_ttmlLastAcceptedPcr[index] = -1;
             m_b24OnlySincePcr[index] = -1;
         }
     }
@@ -1459,11 +1470,11 @@ void CTVCaption2::NoteB24Pes(STREAM_INDEX index, const std::vector<BYTE> &pes)
     if (pcr < 0 || m_b24OnlySincePcr[index] >= 0) {
         return;
     }
-    LONGLONG last = m_ttmlLastArrivalPcr[index];
+    LONGLONG last = m_ttmlLastAcceptedPcr[index];
     if (last >= 0) {
         LONGLONG elapsed = (0x200000000 + pcr - last) & 0x1ffffffff;
         if (elapsed <= TTML_FALLBACK_MSEC * PCR_PER_MSEC || elapsed >= 0x100000000) {
-            // 同じ字幕のTTMLが届いている
+            // 表示対象のTTMLを正常に受理した直後のB24は同じ字幕とみなす
             return;
         }
     }
@@ -1810,13 +1821,7 @@ void CTVCaption2::ProcessPacket(BYTE *pPacket)
         m_ttmlReceiver.FeedPacket(pPacket);
         std::vector<TtmlCaption::Document> documents = m_ttmlReceiver.TakeDocuments();
         if (!documents.empty()) {
-            LONGLONG pcr = m_viewerClockEstimator.GetStreamPcr();
             for (auto &document : documents) {
-                if (document.dataType == 0 && document.componentTag >= 0x30 && document.componentTag <= 0x3f) {
-                    int index = document.componentTag >= 0x38 ? STREAM_SUPERIMPOSE : STREAM_CAPTION;
-                    m_ttmlLastArrivalPcr[index] = pcr;
-                    m_b24OnlySincePcr[index] = -1;
-                }
                 if (m_ttmlDocumentQueue.size() < 64) {
                     m_ttmlDocumentQueue.push_back(std::move(document));
                 }

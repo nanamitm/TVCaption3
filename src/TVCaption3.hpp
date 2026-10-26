@@ -142,9 +142,9 @@ private:
     int m_appDataPid;
     TtmlCaption::SectionReceiver m_ttmlReceiver;
     std::vector<TtmlCaption::Document> m_ttmlDocumentQueue;
-    // TTMLの文書が最後に届いたときと、TTMLが届かないままB24の字幕文が届いたときのPCR。
-    // どちらも受信した時点(ストリームのPCR)で比べる
-    LONGLONG m_ttmlLastArrivalPcr[STREAM_MAX];
+    // 表示対象のTTMLを最後に正常に受理したときと、B24だけになったときのPCR。
+    // 受信しただけの不正文書・非選択言語・外字待ちはTTMLの継続とみなさない
+    LONGLONG m_ttmlLastAcceptedPcr[STREAM_MAX];
     LONGLONG m_b24OnlySincePcr[STREAM_MAX];
     // ここからは字幕描画のスレッドだけで使う
     struct TtmlEntry {

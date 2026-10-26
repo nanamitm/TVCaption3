@@ -155,6 +155,101 @@ struct CaptionPipelineTest
         Check(bounded.m_pendingTtmlDocuments.empty(), "disabling TTML clears pending resource waits");
     }
 
+    static void FeedTtml(CTVCaption2 &plugin, const TtmlCaption::Document &document, int &counter)
+    {
+        plugin.m_appDataPid = 0xF00;
+        std::vector<BYTE> section = {0xC1, 0xB0, 0, 0, static_cast<BYTE>(counter), 0xC1, 0, 0};
+        std::vector<BYTE> body = {static_cast<BYTE>(document.componentTag >> 8), static_cast<BYTE>(document.componentTag),
+                                  0, static_cast<BYTE>(document.tmd), 0x80};
+        for (int shift = 32; shift >= 0; shift -= 8) body.push_back(static_cast<BYTE>(document.pts >> shift));
+        for (int shift = 24; shift >= 0; shift -= 8) body.push_back(static_cast<BYTE>(document.data.size() >> shift));
+        body.insert(body.end(), {4, 'j', 'p', 'n', 1});
+        body.insert(body.end(), document.data.begin(), document.data.end());
+        section.insert(section.end(), body.begin(), body.end());
+        size_t length = section.size() - 3 + 4;
+        section[1] |= static_cast<BYTE>(length >> 8);
+        section[2] = static_cast<BYTE>(length);
+        uint32_t crc = 0xFFFFFFFF;
+        for (BYTE b : section) {
+            crc ^= static_cast<uint32_t>(b) << 24;
+            for (int bit = 0; bit < 8; ++bit) crc = (crc & 0x80000000) ? (crc << 1) ^ 0x04C11DB7 : crc << 1;
+        }
+        for (int shift = 24; shift >= 0; shift -= 8) section.push_back(static_cast<BYTE>(crc >> shift));
+        for (size_t pos = 0; pos < section.size(); ) {
+            std::vector<BYTE> ts(188, 0xFF);
+            ts[0] = 0x47;
+            ts[1] = static_cast<BYTE>(0x0F | (pos == 0 ? 0x40 : 0));
+            ts[2] = 0;
+            ts[3] = static_cast<BYTE>(0x10 | (counter++ & 15));
+            size_t offset = 4;
+            if (pos == 0) ts[offset++] = 0;
+            size_t count = std::min(section.size() - pos, 188 - offset);
+            std::copy_n(section.begin() + pos, count, ts.begin() + offset);
+            plugin.ProcessPacket(ts.data());
+            pos += count;
+        }
+    }
+
+    static std::vector<BYTE> B24Statement()
+    {
+        std::vector<BYTE> pes(19, 0);
+        pes[2] = 1;
+        pes[3] = 0xBF;
+        pes[5] = 13;
+        pes[6] = 0x80;
+        pes[7] = 0xFF;
+        pes[8] = 0xF0;
+        pes[9] = 0x04; // 字幕管理データではなく字幕文
+        return pes;
+    }
+
+    static void TestFallbackAcceptance()
+    {
+        const auto index = CTVCaption2::STREAM_CAPTION;
+        auto statement = B24Statement();
+        for (int rejected = 0; rejected < 3; ++rejected) {
+            CTVCaption2 plugin;
+            Prepare(plugin);
+            plugin.m_ttmlDocumentQueue.push_back(Document("GOOD"));
+            plugin.ProcessTtmlCaption();
+            Check(plugin.m_ttmlComponentTag[index] == 0x30, "a good TTML document activates TTML");
+            plugin.m_viewerClockEstimator.SetStreamPcr(1800000);
+            plugin.NoteB24Pes(index, statement);
+            Check(plugin.m_b24OnlySincePcr[index] == 1800000, "a B24-only statement starts the fallback interval");
+            plugin.m_heldPes[index].push_back(statement);
+            auto document = Document(rejected == 2 ? "&#xe123;" : "IGNORED", rejected == 1 ? 0x31 : 0x30);
+            if (rejected == 0) document.data = "<tt";
+            int counter = 0;
+            FeedTtml(plugin, document, counter);
+            Check(plugin.m_ttmlDocumentQueue.size() == 1, "the rejected TTML travels through the real TS receiver");
+            plugin.ProcessTtmlCaption();
+            Check(plugin.m_b24OnlySincePcr[index] == 1800000,
+                  "invalid XML, unselected language and missing glyphs cannot cancel fallback");
+            plugin.m_viewerClockEstimator.SetStreamPcr(1800000 + 3100 * PCR_PER_MSEC);
+            FeedTtml(plugin, document, counter);
+            plugin.ProcessTtmlCaption();
+            Check(plugin.m_ttmlComponentTag[index] == -1 && plugin.m_pendingTtmlDocuments.empty(),
+                  "B24 resumes despite continuing unusable TTML and clears resource waits");
+            Check(plugin.m_heldPes[index].empty() && plugin.m_caption1PesQueue.size() == 1 &&
+                  plugin.m_caption1PesQueue.front() == statement,
+                  "fallback restores the held B24 PES without losing its contents");
+        }
+
+        CTVCaption2 recovered;
+        Prepare(recovered);
+        recovered.m_ttmlDocumentQueue.push_back(Document("OLD"));
+        recovered.ProcessTtmlCaption();
+        recovered.m_viewerClockEstimator.SetStreamPcr(1800000);
+        recovered.NoteB24Pes(index, statement);
+        recovered.m_viewerClockEstimator.SetStreamPcr(1800000 + 3100 * PCR_PER_MSEC);
+        auto good = Document("RECOVERED");
+        good.pts = 2700000;
+        recovered.m_ttmlDocumentQueue.push_back(good);
+        recovered.ProcessTtmlCaption();
+        Check(recovered.m_ttmlComponentTag[index] == 0x30 && recovered.m_b24OnlySincePcr[index] == -1,
+              "a newly accepted document cancels an expired fallback snapshot in the same processing pass");
+    }
+
     static void TestAdaptationOnly()
     {
         for (bool superimpose : {false, true}) {
@@ -211,6 +306,7 @@ struct CaptionPipelineTest
         TestShortVideoPes();
         TestAdaptationOnly();
         TestLateFonts();
+        TestFallbackAcceptance();
     }
 };
 
