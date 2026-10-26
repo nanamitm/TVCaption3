@@ -129,7 +129,7 @@ void CViewerClockEstimator::SetVideoPes(bool fViewer, bool fUnitStart, const BYT
 {
     if (fUnitStart) {
         m_pesHeaderRemain[fViewer] = -1;
-        if (data[0] == 0 && data[1] == 0 && data[2] == 1 && len >= 9) {
+        if (len >= 9 && data[0] == 0 && data[1] == 0 && data[2] == 1) {
             // TODO: ここでPTSを取って補正に使うとよりよいかもしれない
             m_pesHeaderRemain[fViewer] = 9 + data[8];
         }

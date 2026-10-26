@@ -18,6 +18,8 @@
 // プラグインクラス
 class CTVCaption2 : public TVTest::CTVTestPlugin
 {
+    // TVTestを起動せず受信・切り替え経路を検証する回帰テスト
+    friend struct CaptionPipelineTest;
     // 作成できるOSDの最大数
     static const size_t OSD_MAX_CREATE_NUM = 50;
     // 事前に作成しておくOSDの数(作成時にウィンドウが前面にくるので、気になるなら増やす)
