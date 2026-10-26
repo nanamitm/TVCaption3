@@ -9,10 +9,20 @@ $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $vs) { throw 'Visual Studio C++ tools are required' }
 $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-$toolsetOption = if ($PlatformToolset) { "/p:PlatformToolset=$PlatformToolset" } else { '' }
+if (-not $PlatformToolset) {
+    # vcxprojはVS2017/2019のときしかPlatformToolsetを決めないので、指定が無ければ入って
+    # いるうち新しいものを選ぶ。無指定のままだとMSBuildがv100を選んでMSB8020で止まる
+    $PlatformToolset = Get-ChildItem (Join-Path $vs 'MSBuild\Microsoft\VC') -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ChildItem (Join-Path $_.FullName 'Platforms\x64\PlatformToolsets') -Directory -ErrorAction SilentlyContinue } |
+        Where-Object { $_.Name -match '^v\d{3}$' } | Select-Object -ExpandProperty Name |
+        Sort-Object -Descending | Select-Object -First 1
+    if (-not $PlatformToolset) { throw 'Visual Studio C++ platform toolset not found' }
+}
+$toolsetOption = "/p:PlatformToolset=$PlatformToolset"
 $batch = Join-Path $output 'run.cmd'
 @"
 @echo off
+set "PATH=$(Split-Path $vswhere);%PATH%"
 call "$vcvars" >nul
 if errorlevel 1 exit /b 1
 cd /d "$repo"
