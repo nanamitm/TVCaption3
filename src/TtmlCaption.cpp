@@ -787,8 +787,11 @@ bool RasterizeGlyph(const std::string &path, double unitsPerEm, double ascent, i
     return any;
 }
 
-bool Converter::AddFont(const std::string &svg)
+bool Converter::AddFont(int componentTag, const std::string &svg)
 {
+    if (componentTag < 0x30 || componentTag > 0x3F) {
+        return false;
+    }
     pugi::xml_document doc;
     if (!doc.load_buffer(svg.data(), svg.size())) {
         return false;
@@ -828,8 +831,9 @@ bool Converter::AddFont(const std::string &svg)
             if (!cp || !RasterizeGlyph(d, unitsPerEm, ascent, DRCS_SIZE, drcs)) {
                 continue;
             }
-            added = added || m_drcs.find(cp) == m_drcs.end();
-            m_drcs[cp] = std::move(drcs);
+            auto &glyphs = m_drcs[componentTag];
+            added = added || glyphs.find(cp) == glyphs.end();
+            glyphs[cp] = std::move(drcs);
         }
     }
     return added;
@@ -866,6 +870,10 @@ bool Converter::Convert(const Document &document, bool superimpose, std::vector<
     const int planeWidth = document.resolution == 0 ? 1920 : document.resolution == 2 ? 7680 : 3840;
     const double scale = static_cast<double>(PLANE_WIDTH) / planeWidth;
     const auto &division = resolved.document->division;
+    // 別言語や文字スーパーが同じコードポイントに別の字形を定義することがある
+    static const std::unordered_map<uint32_t, aribcaption::DRCS> emptyGlyphs;
+    auto glyphs = m_drcs.find(document.componentTag);
+    const auto &drcs = glyphs != m_drcs.end() ? glyphs->second : emptyGlyphs;
 
     // 表示が切り替わる時刻
     std::set<int64_t> times;
@@ -918,7 +926,7 @@ bool Converter::Convert(const Document &document, bool superimpose, std::vector<
                 }
                 // 振り仮名らしきもの(小さい文字だけの段落)
                 ruby = ruby || (paragraphFont > 0 && paragraphFont <= largestFont * 0.6);
-                RegionBuilder builder(scale, m_drcs, caption);
+                RegionBuilder builder(scale, drcs, caption);
                 auto lines = SplitLines(spans);
                 double ox = regionStyle.origin->x;
                 double oy = regionStyle.origin->y;

@@ -1249,7 +1249,7 @@ void CTVCaption2::ProcessTtmlCaption()
     for (const auto &document : documents) {
         if (document.dataType == 6) {
             // 外字(SVGフォント)
-            m_ttmlConverter.AddFont(document.data);
+            m_ttmlConverter.AddFont(document.componentTag, document.data);
         }
         else if (document.dataType == 0) {
             ScheduleTtmlDocument(document);

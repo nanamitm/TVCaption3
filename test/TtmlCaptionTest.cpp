@@ -207,8 +207,8 @@ void TestDrcs()
         R"(<glyph unicode="&#xe123;" horiz-adv-x="1024" d="M0,-50 L1024,-50 L1024,974 L0,974 Z"/>)"
         R"(<glyph unicode="&#xe124;" horiz-adv-x="1024" d="M0 -50h512v1024h-512z"/></font></defs></svg>)";
     TtmlCaption::Converter converter;
-    Check(converter.AddFont(font), "the SVG font adds glyphs");
-    Check(!converter.AddFont(font), "the same glyphs are not new");
+    Check(converter.AddFont(0x30, font), "the SVG font adds glyphs");
+    Check(!converter.AddFont(0x30, font), "the same glyphs are not new");
 
     aribcaption::DRCS drcs;
     Check(TtmlCaption::RasterizeGlyph("M0 -50h512v1024h-512z", 1024, 974, 8, drcs), "a glyph rasterizes");
@@ -227,6 +227,7 @@ void TestDrcs()
     TtmlCaption::Document document;
     document.tmd = 0x0F;
     document.data = text;
+    document.componentTag = 0x30;
     std::vector<TtmlCaption::Segment> segments;
     Check(converter.Convert(document, false, segments) && segments.size() == 1 && segments[0].caption.regions.size() == 1, "a caption with DRCS converts");
     if (segments.size() == 1 && segments[0].caption.regions.size() == 1) {
@@ -236,6 +237,39 @@ void TestDrcs()
         Check(caption.drcs_map.count(0xE123) == 1 && caption.drcs_map.at(0xE123).width == 96, "the DRCS pattern travels with the caption");
         Check(c.size() == 2 && c[1].type == aribcaption::CaptionCharType::kText, "other characters stay text");
     }
+}
+
+void TestDrcsIsolation()
+{
+    const char full[] = R"(<svg><font><font-face units-per-em="1024" ascent="974"/><glyph unicode="&#xe123;" d="M0 -50h1024v1024H0z"/></font></svg>)";
+    const char half[] = R"(<svg><font><font-face units-per-em="1024" ascent="974"/><glyph unicode="&#xe123;" d="M0 -50h512v1024H0z"/></font></svg>)";
+    TtmlCaption::Converter converter;
+    Check(converter.AddFont(0x30, full), "first-language font");
+    Check(converter.AddFont(0x31, half), "second-language font");
+    Check(converter.AddFont(0x38, half), "superimpose font");
+    Check(!converter.AddFont(0x20, full), "a non-caption component cannot register a font");
+    TtmlCaption::Document document;
+    document.tmd = 0x0F;
+    document.data = R"(<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><head><layout><region xml:id="r" tts:origin="0px 0px" tts:extent="1000px 200px"/></layout></head><body><div><p region="r"><span>&#xe123;</span></p></div></body></tt>)";
+    auto pixels = [&](int tag) {
+        document.componentTag = tag;
+        std::vector<TtmlCaption::Segment> segments;
+        bool converted = converter.Convert(document, tag >= 0x38, segments);
+        Check(converted && segments.size() == 1 && segments[0].caption.drcs_map.count(0xE123) == 1,
+              "each component resolves its own DRCS glyph");
+        return converted && !segments.empty() && segments[0].caption.drcs_map.count(0xE123)
+            ? segments[0].caption.drcs_map.at(0xE123).pixels : std::vector<uint8_t>{};
+    };
+    auto original = pixels(0x30);
+    auto alternate = pixels(0x31);
+    Check(!original.empty() && original != alternate, "languages retain distinct glyphs at the same codepoint");
+    Check(pixels(0x38) == alternate, "superimpose uses its own half-width glyph");
+    converter.AddFont(0x38, full);
+    Check(pixels(0x31) == alternate && pixels(0x30) == original && pixels(0x38) == original,
+          "updating the superimpose font cannot overwrite either language");
+    converter.Reset();
+    Check(converter.AddFont(0x30, full) && converter.AddFont(0x31, half) && converter.AddFont(0x38, half),
+          "reset clears every component's glyph cache");
 }
 
 void TestStatement()
@@ -258,7 +292,7 @@ void TestErrors()
     document.data = "<tt";
     std::vector<TtmlCaption::Segment> segments;
     Check(!converter.Convert(document, false, segments), "broken XML is rejected");
-    Check(!converter.AddFont("not xml"), "a broken font adds nothing");
+    Check(!converter.AddFont(0x30, "not xml"), "a broken font adds nothing");
 }
 
 } // namespace
@@ -269,6 +303,7 @@ int main()
     TestHorizontal();
     TestVertical();
     TestDrcs();
+    TestDrcsIsolation();
     TestStatement();
     TestErrors();
     if (g_failures) {
