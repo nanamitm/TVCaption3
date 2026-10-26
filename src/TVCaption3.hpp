@@ -18,6 +18,8 @@
 // プラグインクラス
 class CTVCaption2 : public TVTest::CTVTestPlugin
 {
+    // TVTestを起動せず受信・切り替え経路を検証する回帰テスト
+    friend struct CaptionPipelineTest;
     // 作成できるOSDの最大数
     static const size_t OSD_MAX_CREATE_NUM = 50;
     // 事前に作成しておくOSDの数(作成時にウィンドウが前面にくるので、気になるなら増やす)
@@ -63,7 +65,7 @@ private:
     void ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue);
     LONGLONG GetShiftPcr(STREAM_INDEX index);
     void ProcessTtmlCaption();
-    void ScheduleTtmlDocument(const TtmlCaption::Document &document);
+    void ScheduleTtmlDocument(const TtmlCaption::Document &document, DWORD receivedTick);
     void DeactivateTtml(STREAM_INDEX index);
     void ResetTtml(bool fKeepFonts = false);
     void NoteB24Pes(STREAM_INDEX index, const std::vector<BYTE> &pes);
@@ -140,9 +142,9 @@ private:
     int m_appDataPid;
     TtmlCaption::SectionReceiver m_ttmlReceiver;
     std::vector<TtmlCaption::Document> m_ttmlDocumentQueue;
-    // TTMLの文書が最後に届いたときと、TTMLが届かないままB24の字幕文が届いたときのPCR。
-    // どちらも受信した時点(ストリームのPCR)で比べる
-    LONGLONG m_ttmlLastArrivalPcr[STREAM_MAX];
+    // 表示対象のTTMLを最後に正常に受理したときと、B24だけになったときのPCR。
+    // 受信しただけの不正文書・非選択言語・外字待ちはTTMLの継続とみなさない
+    LONGLONG m_ttmlLastAcceptedPcr[STREAM_MAX];
     LONGLONG m_b24OnlySincePcr[STREAM_MAX];
     // ここからは字幕描画のスレッドだけで使う
     struct TtmlEntry {
@@ -152,6 +154,12 @@ private:
         aribcaption::Caption caption;
     };
     TtmlCaption::Converter m_ttmlConverter;
+    struct PendingTtmlDocument {
+        TtmlCaption::Document document;
+        DWORD receivedTick;
+    };
+    // 外字待ちの文書。受信時刻を維持し、古い速報をフォント到着時に再表示しない
+    std::vector<PendingTtmlDocument> m_pendingTtmlDocuments;
     std::vector<TtmlEntry> m_ttmlQueue[STREAM_MAX];
     // TTMLで表示しているcomponent_tag。-1ならB24の字幕を表示している
     int m_ttmlComponentTag[STREAM_MAX];
