@@ -86,6 +86,7 @@ CTVCaption2::CTVCaption2()
 {
     m_szCaptureSaveFormat[0] = 0;
     m_fTtmlCaption = true;
+    m_fTtmlGlyphWarned = false;
 
     for (int index = 0; index < STREAM_MAX; ++index) {
         m_showFlags[index] = 0;
@@ -1249,7 +1250,18 @@ void CTVCaption2::ProcessTtmlCaption()
     // 同じ受信バッチに文書と外字があれば、先に外字を登録する
     for (const auto &document : documents) {
         if (document.dataType == 6 && document.componentTag >= 0x30 && document.componentTag <= 0x3F) {
-            fontsUpdated[document.componentTag - 0x30] |= m_ttmlConverter.AddFont(document.componentTag, document.data);
+            TtmlCaption::Converter::FontStats stats;
+            fontsUpdated[document.componentTag - 0x30] |= m_ttmlConverter.AddFont(document.componentTag, document.data, &stats);
+            if (stats.skipped && !m_fTtmlGlyphWarned) {
+                // 描けない外字があると、その字を含む文書は表示できずB24の字幕に戻る。
+                // リソースは繰り返し届くので、原因が分かるよう一度だけ記録する
+                m_fTtmlGlyphWarned = true;
+                TCHAR text[192];
+                _stprintf_s(text, TEXT("TTMLの外字を%d字描けませんでした(component_tag=%02X、最初はU+%04X)。")
+                                  TEXT("この字を含む字幕はB24から表示します。"),
+                            stats.skipped, document.componentTag, stats.firstSkipped);
+                m_pApp->AddLog(text, TVTest::LOG_TYPE_WARNING);
+            }
         }
     }
     auto pending = std::move(m_pendingTtmlDocuments);
@@ -1452,6 +1464,8 @@ void CTVCaption2::ResetTtml(bool fKeepFonts)
     }
     if (!fKeepFonts) {
         m_ttmlConverter.Reset();
+        // 外字を捨てたら、次に届くリソースで改めて記録できるようにする
+        m_fTtmlGlyphWarned = false;
     }
 }
 
