@@ -18,3 +18,5 @@
 !*.yml
 # ビルド前にtools/generate-version-header.ps1が書き出す
 src/TVCaption3Version.h
+# Visual Studioが書き出す
+.vs/
