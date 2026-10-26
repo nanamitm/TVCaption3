@@ -76,8 +76,9 @@ public:
     bool AddFont(int componentTag, const std::string &svg);
     void Reset();
     // 文書を表示の切り替わりごとのCaptionにする。時刻制御の無い文書は時刻0の1つになる。
-    // 解析できなければfalse
-    bool Convert(const Document &document, bool superimpose, std::vector<Segment> &segments) const;
+    // 解析不能または外字未着ならfalse。外字未着だけならmissingGlyphsにtrueを返す
+    bool Convert(const Document &document, bool superimpose, std::vector<Segment> &segments,
+                 bool *missingGlyphs = nullptr) const;
 
 private:
     std::map<int, std::unordered_map<uint32_t, aribcaption::DRCS>> m_drcs;

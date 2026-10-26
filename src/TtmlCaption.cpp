@@ -844,10 +844,14 @@ void Converter::Reset()
     m_drcs.clear();
 }
 
-bool Converter::Convert(const Document &document, bool superimpose, std::vector<Segment> &segments) const
+bool Converter::Convert(const Document &document, bool superimpose, std::vector<Segment> &segments,
+                        bool *missingGlyphs) const
 {
     namespace ttml = arib::ttml;
     segments.clear();
+    if (missingGlyphs) {
+        *missingGlyphs = false;
+    }
     // 字幕は同期型、文字スーパーは非同期型(dantto4kのB24変換と同じ)。TMDが1111なら
     // 時刻制御なしで、begin/endを読まない(ARIB TR-B39 8.5.9.2)
     const auto mode = superimpose ? ttml::SyncMode::Async : ttml::SyncMode::Sync;
@@ -874,6 +878,26 @@ bool Converter::Convert(const Document &document, bool superimpose, std::vector<
     static const std::unordered_map<uint32_t, aribcaption::DRCS> emptyGlyphs;
     auto glyphs = m_drcs.find(document.componentTag);
     const auto &drcs = glyphs != m_drcs.end() ? glyphs->second : emptyGlyphs;
+    if (division) {
+        // 私用領域の文字はSVGリソースを待つ。欠けた外字を通常のフォントで確定させない
+        for (const auto &paragraph : division->paragraphs) {
+            for (const auto &span : paragraph.spans) {
+                for (const auto &item : span.content) {
+                    const auto *text = std::get_if<std::string>(&item);
+                    if (!text) continue;
+                    for (uint32_t cp : DecodeUtf8(*text)) {
+                        bool privateUse = (cp >= 0xE000 && cp <= 0xF8FF) ||
+                                          (cp >= 0xF0000 && cp <= 0xFFFFD) ||
+                                          (cp >= 0x100000 && cp <= 0x10FFFD);
+                        if (privateUse && drcs.find(cp) == drcs.end()) {
+                            if (missingGlyphs) *missingGlyphs = true;
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 表示が切り替わる時刻
     std::set<int64_t> times;

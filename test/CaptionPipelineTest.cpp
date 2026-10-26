@@ -62,6 +62,99 @@ void TestShortVideoPes()
 
 struct CaptionPipelineTest
 {
+    static LRESULT CALLBACK HostCallback(TVTest::PluginParam *, UINT, LPARAM, LPARAM) { return TRUE; }
+
+    static void Prepare(CTVCaption2 &plugin)
+    {
+        static TVTest::PluginParam param = {HostCallback, nullptr, nullptr, nullptr};
+        plugin.SetPluginParam(&param);
+        plugin.m_viewerClockEstimator.SetStreamPcr(900000);
+    }
+
+    static TtmlCaption::Document Document(const std::string &text, int tag = 0x30)
+    {
+        TtmlCaption::Document document;
+        document.componentTag = tag;
+        document.tmd = 2;
+        document.pts = 1800000; // テスト中に表示時刻にならないよう10秒先に予約する
+        document.data = R"(<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><head><layout><region xml:id="r" tts:origin="0px 0px" tts:extent="1000px 200px"/></layout></head><body><div><p region="r"><span>)" + text + "</span></p></div></body></tt>";
+        return document;
+    }
+
+    static TtmlCaption::Document Font(int tag = 0x30)
+    {
+        TtmlCaption::Document font;
+        font.componentTag = tag;
+        font.dataType = 6;
+        font.data = R"(<svg><font><font-face units-per-em="1024" ascent="974"/><glyph unicode="&#xe123;" d="M0 -50h1024v1024H0z"/></font></svg>)";
+        return font;
+    }
+
+    static void TestLateFonts()
+    {
+        CTVCaption2 plugin;
+        Prepare(plugin);
+        plugin.m_ttmlDocumentQueue.push_back(Document("&#xe123;"));
+        plugin.ProcessTtmlCaption();
+        Check(plugin.m_pendingTtmlDocuments.size() == 1 && plugin.m_ttmlComponentTag[0] == -1 && plugin.m_ttmlQueue[0].empty(),
+              "a missing glyph holds the original document without suppressing B24");
+        plugin.m_ttmlDocumentQueue.push_back(Font(0x31));
+        plugin.ProcessTtmlCaption();
+        Check(plugin.m_pendingTtmlDocuments.size() == 1 && plugin.m_ttmlQueue[0].empty(),
+              "another language's resource cannot release a waiting document");
+        plugin.m_ttmlDocumentQueue.push_back(Font());
+        plugin.ProcessTtmlCaption();
+        Check(plugin.m_pendingTtmlDocuments.empty() && plugin.m_ttmlQueue[0].size() == 1 &&
+              plugin.m_ttmlQueue[0][0].caption.drcs_map.count(0xE123) == 1,
+              "the matching late font rebuilds and schedules the original caption");
+
+        CTVCaption2 sameBatch;
+        Prepare(sameBatch);
+        sameBatch.m_ttmlDocumentQueue = {Document("&#xe123;"), Font()};
+        sameBatch.ProcessTtmlCaption();
+        Check(sameBatch.m_pendingTtmlDocuments.empty() && sameBatch.m_ttmlQueue[0].size() == 1 &&
+              sameBatch.m_ttmlQueue[0][0].caption.drcs_map.count(0xE123) == 1,
+              "a later font in the same batch is available before conversion");
+
+        CTVCaption2 expired;
+        Prepare(expired);
+        auto alert = Document("&#xe123;", 0x38);
+        alert.tmd = 15;
+        expired.m_ttmlDocumentQueue.push_back(alert);
+        expired.ProcessTtmlCaption();
+        Check(expired.m_pendingTtmlDocuments.size() == 1, "a superimpose can wait for a resource");
+        if (!expired.m_pendingTtmlDocuments.empty()) {
+            expired.m_pendingTtmlDocuments[0].receivedTick = GetTickCount() - 3001;
+        }
+        expired.m_ttmlDocumentQueue.push_back(Font(0x38));
+        expired.ProcessTtmlCaption();
+        Check(expired.m_pendingTtmlDocuments.empty() && expired.m_ttmlComponentTag[1] == -1,
+              "an expired alert cannot reappear when its font finally arrives");
+
+        CTVCaption2 superseded;
+        Prepare(superseded);
+        superseded.m_ttmlDocumentQueue = {Document("&#xe123;"), Document("NEW")};
+        superseded.ProcessTtmlCaption();
+        Check(superseded.m_pendingTtmlDocuments.empty(), "a newer accepted document supersedes an older resource wait");
+        superseded.m_ttmlDocumentQueue.push_back(Font());
+        superseded.ProcessTtmlCaption();
+        Check(superseded.m_ttmlQueue[0].size() == 1 && superseded.m_ttmlQueue[0][0].caption.text == "NEW",
+              "a late resource cannot rewind to a superseded caption");
+
+        CTVCaption2 bounded;
+        Prepare(bounded);
+        for (int i = 0; i < 40; ++i) bounded.m_ttmlDocumentQueue.push_back(Document("&#xe123;"));
+        bounded.ProcessTtmlCaption();
+        Check(bounded.m_pendingTtmlDocuments.size() == 32, "missing resources cannot grow the pending queue without limit");
+        bounded.ResetTtml(true);
+        Check(bounded.m_pendingTtmlDocuments.empty(), "a seek clears resource waits even when keeping fonts");
+        bounded.m_ttmlDocumentQueue.push_back(Document("&#xe123;"));
+        bounded.ProcessTtmlCaption();
+        bounded.m_fTtmlCaption = false;
+        bounded.ProcessTtmlCaption();
+        Check(bounded.m_pendingTtmlDocuments.empty(), "disabling TTML clears pending resource waits");
+    }
+
     static void TestAdaptationOnly()
     {
         for (bool superimpose : {false, true}) {
@@ -117,6 +210,7 @@ struct CaptionPipelineTest
     {
         TestShortVideoPes();
         TestAdaptationOnly();
+        TestLateFonts();
     }
 };
 

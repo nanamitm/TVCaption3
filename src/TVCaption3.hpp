@@ -65,7 +65,7 @@ private:
     void ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue);
     LONGLONG GetShiftPcr(STREAM_INDEX index);
     void ProcessTtmlCaption();
-    void ScheduleTtmlDocument(const TtmlCaption::Document &document);
+    void ScheduleTtmlDocument(const TtmlCaption::Document &document, DWORD receivedTick);
     void DeactivateTtml(STREAM_INDEX index);
     void ResetTtml(bool fKeepFonts = false);
     void NoteB24Pes(STREAM_INDEX index, const std::vector<BYTE> &pes);
@@ -154,6 +154,12 @@ private:
         aribcaption::Caption caption;
     };
     TtmlCaption::Converter m_ttmlConverter;
+    struct PendingTtmlDocument {
+        TtmlCaption::Document document;
+        DWORD receivedTick;
+    };
+    // 外字待ちの文書。受信時刻を維持し、古い速報をフォント到着時に再表示しない
+    std::vector<PendingTtmlDocument> m_pendingTtmlDocuments;
     std::vector<TtmlEntry> m_ttmlQueue[STREAM_MAX];
     // TTMLで表示しているcomponent_tag。-1ならB24の字幕を表示している
     int m_ttmlComponentTag[STREAM_MAX];

@@ -25,6 +25,7 @@ const LPARAM RESET_CAPTION_KEEP_FONTS = 1;
 
 // TTMLの字幕を表示している間に取っておくB24のPESの数(字幕管理データは0.5秒ごとに届く)
 const size_t TTML_MAX_HELD_PES = 32;
+const size_t TTML_MAX_PENDING_DOCUMENTS = 32;
 // B24の字幕文が届いてからこれだけ経ってもTTMLが届かなければ、TTMLの無いストリーム(古い
 // dantto4kで変換した録画など)に変わったとみなしてB24の字幕に戻す。dantto4kは同じ字幕の
 // TTMLとB24を同時に送るので、普段は数ミリ秒しか離れない
@@ -1239,6 +1240,7 @@ void CTVCaption2::ProcessTtmlCaption()
         std::copy(m_b24OnlySincePcr, m_b24OnlySincePcr + STREAM_MAX, b24OnlySincePcr);
     }
     if (!m_fTtmlCaption) {
+        m_pendingTtmlDocuments.clear();
         for (int index = 0; index < STREAM_MAX; ++index) {
             if (m_ttmlComponentTag[index] >= 0) {
                 DeactivateTtml(static_cast<STREAM_INDEX>(index));
@@ -1246,13 +1248,30 @@ void CTVCaption2::ProcessTtmlCaption()
         }
         return;
     }
+    DWORD tick = GetTickCount();
+    bool fontsUpdated[16] = {};
+    // 同じ受信バッチに文書と外字があれば、先に外字を登録する
     for (const auto &document : documents) {
-        if (document.dataType == 6) {
-            // 外字(SVGフォント)
-            m_ttmlConverter.AddFont(document.componentTag, document.data);
+        if (document.dataType == 6 && document.componentTag >= 0x30 && document.componentTag <= 0x3F) {
+            fontsUpdated[document.componentTag - 0x30] |= m_ttmlConverter.AddFont(document.componentTag, document.data);
         }
-        else if (document.dataType == 0) {
-            ScheduleTtmlDocument(document);
+    }
+    auto pending = std::move(m_pendingTtmlDocuments);
+    m_pendingTtmlDocuments.clear();
+    for (auto &entry : pending) {
+        if (tick - entry.receivedTick > static_cast<DWORD>(TTML_FALLBACK_MSEC)) {
+            continue;
+        }
+        if (fontsUpdated[entry.document.componentTag - 0x30]) {
+            ScheduleTtmlDocument(entry.document, entry.receivedTick);
+        }
+        else {
+            m_pendingTtmlDocuments.push_back(std::move(entry));
+        }
+    }
+    for (const auto &document : documents) {
+        if (document.dataType == 0) {
+            ScheduleTtmlDocument(document, tick);
         }
     }
 
@@ -1301,7 +1320,7 @@ void CTVCaption2::ProcessTtmlCaption()
 
 
 // TTMLの文書を表示の切り替わりごとのCaptionにして、表示する時刻を決める
-void CTVCaption2::ScheduleTtmlDocument(const TtmlCaption::Document &document)
+void CTVCaption2::ScheduleTtmlDocument(const TtmlCaption::Document &document, DWORD receivedTick)
 {
     if (document.componentTag < 0x30 || document.componentTag > 0x3f) {
         return;
@@ -1319,9 +1338,20 @@ void CTVCaption2::ScheduleTtmlDocument(const TtmlCaption::Document &document)
         return;
     }
     std::vector<TtmlCaption::Segment> segments;
-    if (!m_ttmlConverter.Convert(document, index == STREAM_SUPERIMPOSE, segments) || segments.empty()) {
+    bool missingGlyphs = false;
+    if (!m_ttmlConverter.Convert(document, index == STREAM_SUPERIMPOSE, segments, &missingGlyphs) || segments.empty()) {
+        if (missingGlyphs) {
+            if (m_pendingTtmlDocuments.size() >= TTML_MAX_PENDING_DOCUMENTS) {
+                m_pendingTtmlDocuments.erase(m_pendingTtmlDocuments.begin());
+            }
+            m_pendingTtmlDocuments.push_back({document, receivedTick});
+        }
         return;
     }
+    // 後続の文書を受理したら、古い外字待ち文書に戻らない
+    m_pendingTtmlDocuments.erase(std::remove_if(m_pendingTtmlDocuments.begin(), m_pendingTtmlDocuments.end(),
+        [&](const PendingTtmlDocument &entry) { return entry.document.componentTag == document.componentTag; }),
+        m_pendingTtmlDocuments.end());
     if (selected != document.componentTag) {
         if (selected < 0) {
             // B24に変換された同じ字幕を止める。表示中のものはこのあとのTTMLで置き換わる
@@ -1369,6 +1399,10 @@ void CTVCaption2::DeactivateTtml(STREAM_INDEX index)
     }
     m_ttmlComponentTag[index] = -1;
     m_ttmlQueue[index].clear();
+    m_pendingTtmlDocuments.erase(std::remove_if(m_pendingTtmlDocuments.begin(), m_pendingTtmlDocuments.end(),
+        [&](const PendingTtmlDocument &entry) {
+            return (entry.document.componentTag >= 0x38 ? STREAM_SUPERIMPOSE : STREAM_CAPTION) == index;
+        }), m_pendingTtmlDocuments.end());
     // 表示中のTTMLの字幕を消す
     m_renderedPts[index] = -1;
     RenderCaption(index, false);
@@ -1390,6 +1424,7 @@ void CTVCaption2::DeactivateTtml(STREAM_INDEX index)
 // たびに捨てると、次に届くまで外字が表示されなくなる
 void CTVCaption2::ResetTtml(bool fKeepFonts)
 {
+    m_pendingTtmlDocuments.clear();
     {
         lock_recursive_mutex lock(m_streamLock);
         m_ttmlReceiver.Reset();

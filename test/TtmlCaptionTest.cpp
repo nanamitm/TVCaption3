@@ -272,6 +272,27 @@ void TestDrcsIsolation()
           "reset clears every component's glyph cache");
 }
 
+void TestMissingGlyphs()
+{
+    TtmlCaption::Converter converter;
+    TtmlCaption::Document document;
+    document.componentTag = 0x30;
+    document.tmd = 15;
+    std::vector<TtmlCaption::Segment> segments;
+    bool missing = true;
+    document.data = "<tt";
+    Check(!converter.Convert(document, false, segments, &missing) && !missing,
+          "broken XML is distinct from a missing font");
+    for (const char *text : {"&#xe123;", "&#xf0001;", "&#x100001;"}) {
+        document.data = std::string(R"(<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><head><layout><region xml:id="r" tts:origin="0px 0px" tts:extent="1000px 200px"/></layout></head><body><div><p region="r"><span>)") + text + "</span></p></div></body></tt>";
+        Check(!converter.Convert(document, false, segments, &missing) && missing && segments.empty(),
+              "each Unicode private-use plane waits for its SVG resource");
+    }
+    document.data = HORIZONTAL;
+    Check(converter.Convert(document, false, segments, &missing) && !missing,
+          "ordinary text needs no SVG resource");
+}
+
 void TestStatement()
 {
     const uint8_t management[] = {0x80, 0xFF, 0xF0, 0x00 << 2, 0, 0};
@@ -304,6 +325,7 @@ int main()
     TestVertical();
     TestDrcs();
     TestDrcsIsolation();
+    TestMissingGlyphs();
     TestStatement();
     TestErrors();
     if (g_failures) {
