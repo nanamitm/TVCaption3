@@ -1132,6 +1132,8 @@ void CTVCaption2::ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue)
             PES_HEADER pesHeader;
             extract_pes_header(&pesHeader, it->data(), static_cast<int>(it->size()));
             if (pesHeader.packet_start_code_prefix) {
+                // 表示時刻を計算する前に、字幕と文字スーパーの遅延設定を選ぶ
+                index = pesHeader.stream_id == 0xbf ? STREAM_SUPERIMPOSE : STREAM_CAPTION;
                 LONGLONG shiftPcr = 0;
                 LONGLONG pcr = m_viewerClockEstimator.GetViewerPcr();
                 if (pcr >= 0) {
@@ -1143,7 +1145,6 @@ void CTVCaption2::ProcessCaption(std::vector<std::vector<BYTE>> &streamPesQueue)
                     // 文字スーパーは非同期PESなので字幕文取得時のPCRが表示タイミングの基準になる
                     pts = shiftPcr;
                     payloadPos = pesHeader.pes_payload_pos;
-                    index = STREAM_SUPERIMPOSE;
                 }
                 else if (pesHeader.pts_dts_flags >= 2) {
                     // 字幕
