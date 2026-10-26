@@ -787,7 +787,7 @@ bool RasterizeGlyph(const std::string &path, double unitsPerEm, double ascent, i
     return any;
 }
 
-bool Converter::AddFont(int componentTag, const std::string &svg)
+bool Converter::AddFont(int componentTag, const std::string &svg, FontStats *stats)
 {
     if (componentTag < 0x30 || componentTag > 0x3F) {
         return false;
@@ -817,9 +817,6 @@ bool Converter::AddFont(int componentTag, const std::string &svg)
         for (pugi::xpath_node node : font.select_nodes(".//*[local-name()='glyph']")) {
             pugi::xml_node glyph = node.node();
             const char *d = glyph.attribute("d").value();
-            if (!d[0]) {
-                continue;
-            }
             uint32_t cp = ParseCodepointAttribute(glyph.attribute("unicode").value());
             if (!cp) {
                 cp = ParseCodepointAttribute(glyph.attribute("unicode-range").value());
@@ -827,8 +824,19 @@ bool Converter::AddFont(int componentTag, const std::string &svg)
             if (!cp) {
                 cp = faceCodepoint;
             }
+            if (!cp) {
+                // どの文字のものか分からないグリフは数えない
+                continue;
+            }
             aribcaption::DRCS drcs;
-            if (!cp || !RasterizeGlyph(d, unitsPerEm, ascent, DRCS_SIZE, drcs)) {
+            if (!d[0] || !RasterizeGlyph(d, unitsPerEm, ascent, DRCS_SIZE, drcs)) {
+                // 描けなかった字。この字を含む文書は外字未着のまま捨てられる
+                if (stats) {
+                    if (!stats->skipped) {
+                        stats->firstSkipped = cp;
+                    }
+                    ++stats->skipped;
+                }
                 continue;
             }
             auto &glyphs = m_drcs[componentTag];

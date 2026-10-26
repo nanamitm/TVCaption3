@@ -72,8 +72,17 @@ struct Segment
 class Converter
 {
 public:
+    // AddFont()が描けなかった外字。この字を含む文書は外字未着のまま捨てられるので、
+    // 原因を記録できるよう呼び出し側へ返す
+    struct FontStats
+    {
+        // コードポイントは分かったが字形を描けなかったグリフの数
+        int skipped = 0;
+        // そのうち最初のコードポイント
+        uint32_t firstSkipped = 0;
+    };
     // component_tagごとに外字(SVGフォント)を登録する。新しく登録した字があればtrue
-    bool AddFont(int componentTag, const std::string &svg);
+    bool AddFont(int componentTag, const std::string &svg, FontStats *stats = nullptr);
     void Reset();
     // 文書を表示の切り替わりごとのCaptionにする。時刻制御の無い文書は時刻0の1つになる。
     // 解析不能または外字未着ならfalse。外字未着だけならmissingGlyphsにtrueを返す

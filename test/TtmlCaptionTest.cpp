@@ -272,6 +272,36 @@ void TestDrcsIsolation()
           "reset clears every component's glyph cache");
 }
 
+void TestFontStats()
+{
+    // 描ける字、閉じるだけで何も塗らないパス、空のパス、どの文字か分からない字
+    const char mixed[] = R"(<svg><font><font-face units-per-em="1024" ascent="974"/>)"
+        R"(<glyph unicode="&#xe300;" d="M0 -50h1024v1024H0z"/>)"
+        R"(<glyph unicode="&#xe301;" d="Z"/>)"
+        R"(<glyph unicode="&#xe302;" d=""/>)"
+        R"(<glyph d="M0 -50h1024v1024H0z"/></font></svg>)";
+    TtmlCaption::Converter converter;
+    TtmlCaption::Converter::FontStats stats;
+    Check(converter.AddFont(0x30, mixed, &stats), "a font with one usable glyph still registers it");
+    Check(stats.skipped == 2 && stats.firstSkipped == 0xE301,
+          "glyphs with a codepoint but no outline are counted, and the first is reported");
+
+    const char clean[] = R"(<svg><font><font-face units-per-em="1024" ascent="974"/><glyph unicode="&#xe300;" d="M0 -50h1024v1024H0z"/></font></svg>)";
+    TtmlCaption::Converter::FontStats none;
+    converter.AddFont(0x31, clean, &none);
+    Check(none.skipped == 0 && none.firstSkipped == 0, "a font whose glyphs all rasterize reports nothing");
+
+    // 描けなかった字はDRCSにならないので、その字を含む文書は外字を待ち続ける
+    TtmlCaption::Document document;
+    document.componentTag = 0x30;
+    document.tmd = 15;
+    document.data = R"(<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><head><layout><region xml:id="r" tts:origin="0px 0px" tts:extent="1000px 200px"/></layout></head><body><div><p region="r"><span>&#xe301;</span></p></div></body></tt>)";
+    std::vector<TtmlCaption::Segment> segments;
+    bool missing = false;
+    Check(!converter.Convert(document, false, segments, &missing) && missing,
+          "an undrawable glyph keeps the document waiting for its resource");
+}
+
 void TestMissingGlyphs()
 {
     TtmlCaption::Converter converter;
@@ -325,6 +355,7 @@ int main()
     TestVertical();
     TestDrcs();
     TestDrcsIsolation();
+    TestFontStats();
     TestMissingGlyphs();
     TestStatement();
     TestErrors();

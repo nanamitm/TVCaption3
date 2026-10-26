@@ -160,6 +160,8 @@ private:
     };
     // 外字待ちの文書。受信時刻を維持し、古い速報をフォント到着時に再表示しない
     std::vector<PendingTtmlDocument> m_pendingTtmlDocuments;
+    // 描けない外字をログに記録したか。リソースは繰り返し届くので一度だけ記録する
+    bool m_fTtmlGlyphWarned;
     std::vector<TtmlEntry> m_ttmlQueue[STREAM_MAX];
     // TTMLで表示しているcomponent_tag。-1ならB24の字幕を表示している
     int m_ttmlComponentTag[STREAM_MAX];

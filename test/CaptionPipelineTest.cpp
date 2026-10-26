@@ -7,11 +7,15 @@
 #include "TVTestPlugin.h"
 #include "TVCaption3.hpp"
 #include <cstdio>
+#include <string>
 
 namespace
 {
 int g_checks = 0;
 int g_failures = 0;
+// プラグインがAddLog()で記録した警告
+int g_warnings = 0;
+std::wstring g_lastWarning;
 
 void Check(bool ok, const char *message)
 {
@@ -62,7 +66,14 @@ void TestShortVideoPes()
 
 struct CaptionPipelineTest
 {
-    static LRESULT CALLBACK HostCallback(TVTest::PluginParam *, UINT, LPARAM, LPARAM) { return TRUE; }
+    static LRESULT CALLBACK HostCallback(TVTest::PluginParam *, UINT message, LPARAM lParam1, LPARAM lParam2)
+    {
+        if (message == TVTest::MESSAGE_ADDLOG && lParam2 == TVTest::LOG_TYPE_WARNING) {
+            ++g_warnings;
+            g_lastWarning = reinterpret_cast<LPCWSTR>(lParam1);
+        }
+        return TRUE;
+    }
 
     static void Prepare(CTVCaption2 &plugin)
     {
@@ -301,12 +312,61 @@ struct CaptionPipelineTest
         }
     }
 
+    // 字形を描けない外字。dが有効なパスにならないのでDRCSを作れない
+    static TtmlCaption::Document UndrawableFont(int tag = 0x30)
+    {
+        TtmlCaption::Document font;
+        font.componentTag = tag;
+        font.dataType = 6;
+        font.data = R"(<svg><font><font-face units-per-em="1024" ascent="974"/><glyph unicode="&#xe200;" d="Z"/></font></svg>)";
+        return font;
+    }
+
+    static void TestUndrawableGlyphWarning()
+    {
+        CTVCaption2 plugin;
+        Prepare(plugin);
+        // 描ける外字だけなら何も記録しない
+        int base = g_warnings;
+        plugin.m_ttmlDocumentQueue.push_back(Font());
+        plugin.ProcessTtmlCaption();
+        Check(g_warnings == base, "a font whose glyphs all rasterize logs nothing");
+
+        plugin.m_ttmlDocumentQueue.push_back(UndrawableFont());
+        plugin.ProcessTtmlCaption();
+        Check(g_warnings == base + 1, "an undrawable glyph is reported");
+        Check(g_lastWarning.find(L"U+E200") != std::wstring::npos &&
+              g_lastWarning.find(L"component_tag=30") != std::wstring::npos,
+              "the warning names the codepoint and the component");
+
+        // リソースは繰り返し届くので、同じ原因で記録し続けない
+        for (int i = 0; i < 3; ++i) {
+            plugin.m_ttmlDocumentQueue.push_back(UndrawableFont());
+            plugin.ProcessTtmlCaption();
+        }
+        Check(g_warnings == base + 1, "a repeated resource is reported only once");
+
+        // 外字を捨てるリセットのあとは、改めて記録できる
+        plugin.ResetTtml(false);
+        plugin.m_ttmlDocumentQueue.push_back(UndrawableFont(0x38));
+        plugin.ProcessTtmlCaption();
+        Check(g_warnings == base + 2 && g_lastWarning.find(L"component_tag=38") != std::wstring::npos,
+              "a reset that drops fonts arms the warning again");
+
+        // 外字を残すリセットでは、同じ原因を繰り返し記録しない
+        plugin.ResetTtml(true);
+        plugin.m_ttmlDocumentQueue.push_back(UndrawableFont(0x38));
+        plugin.ProcessTtmlCaption();
+        Check(g_warnings == base + 2, "a seek that keeps fonts does not repeat the warning");
+    }
+
     static void Run()
     {
         TestShortVideoPes();
         TestAdaptationOnly();
         TestLateFonts();
         TestFallbackAcceptance();
+        TestUndrawableGlyphWarning();
     }
 };
 
